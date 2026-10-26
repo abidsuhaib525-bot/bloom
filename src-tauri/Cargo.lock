@@ -415,29 +415,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bloom"
-version = "3.9.2"
-dependencies = [
- "base64 0.22.1",
- "image",
- "rustfft",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-drag",
- "tauri-plugin-opener",
- "tauri-plugin-updater",
- "tokio",
- "webview2-com",
- "window-vibrancy 0.7.1",
- "windows 0.61.3",
- "wmi",
-]
-
-[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1130,6 +1107,29 @@ dependencies = [
  "thiserror 2.0.18",
  "windows 0.52.0",
  "windows-core 0.58.0",
+]
+
+[[package]]
+name = "drift"
+version = "3.9.2"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-drag",
+ "tauri-plugin-opener",
+ "tauri-plugin-updater",
+ "tokio",
+ "webview2-com",
+ "window-vibrancy 0.7.1",
+ "windows 0.61.3",
+ "wmi",
 ]
 
 [[package]]

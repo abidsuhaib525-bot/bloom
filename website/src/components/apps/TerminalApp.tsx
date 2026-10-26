@@ -6,7 +6,7 @@ interface TerminalAppProps {
 
 export default function TerminalApp({ accentColor }: TerminalAppProps) {
 	const [history, setHistory] = useState<string[]>([
-		"Initializing Bloom kernel v3.1.2...",
+		"Initializing Drift kernel v3.1.2...",
 		"[INFO] Initializing Rust core module",
 		"[INFO] Binding Windows DWM API listeners",
 		"[INFO] Hooking taskbar window position listener",
@@ -15,7 +15,7 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 		"[INFO] Setup volume controller listener",
 		"[INFO] Dock window initialized: transparent=true, width=1920",
 		"[INFO] Top notch window initialized: x=0, y=0, height=360",
-		"Bloom startup completed. Welcome!",
+		"Drift startup completed. Welcome!",
 		"Type 'help' to see available commands."
 	]);
 	const [input, setInput] = useState("");
@@ -35,14 +35,14 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 			response = [
 				"Available Commands:",
 				"  help         Show this list of commands",
-				"  features     List Bloom's major desktop features",
+				"  features     List Drift's major desktop features",
 				"  systeminfo   Display mock system specs",
-				"  about        Background story of Bloom's engineering",
+				"  about        Background story of Drift's engineering",
 				"  clear        Clear the screen"
 			];
 		} else if (trimmed === "features") {
 			response = [
-				"🌸 Bloom Features Outline:",
+				"🌸 Drift Features Outline:",
 				"  - [Notch Module]: Expandable pill menu for calendar, weather & volume widget status.",
 				"  - [Dock Module]: Pin apps, drag reordering, and hover thumbnail live window previews.",
 				"  - [Audio Module]: Audio-reactive visualizer syncing with current music track beats.",
@@ -60,7 +60,7 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 		} else if (trimmed === "about") {
 			response = [
 				"🛠️ Engineering Backstory:",
-				"  Bloom was built as a solution to bulky, resource-heavy customization tools.",
+				"  Drift was built as a solution to bulky, resource-heavy customization tools.",
 				"  By replacing Electron with Tauri v2, the app compiles to a native Windows executable",
 				"  that uses only raw system events and standard webview renders, cutting RAM usage by 95%."
 			];
@@ -68,10 +68,10 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 			setHistory([]);
 			return;
 		} else if (trimmed !== "") {
-			response = [`bloom: command not found: '${cmd}'. Type 'help' for available actions.`];
+			response = [`drift: command not found: '${cmd}'. Type 'help' for available actions.`];
 		}
 
-		setHistory((prev) => [...prev, `bloom@system:~$ ${cmd}`, ...response]);
+		setHistory((prev) => [...prev, `drift@system:~$ ${cmd}`, ...response]);
 	};
 
 	const handleSubmit = (e: FormEvent) => {
@@ -87,11 +87,11 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 					<div
 						key={idx}
 						className={`${
-							line.startsWith("bloom@system")
+							line.startsWith("drift@system")
 								? "text-white"
 								: line.startsWith("[INFO]")
 									? "text-white/40"
-									: line.startsWith("bloom: command not found")
+									: line.startsWith("drift: command not found")
 										? "text-rose-400"
 										: "text-emerald-400"
 						}`}
@@ -106,7 +106,7 @@ export default function TerminalApp({ accentColor }: TerminalAppProps) {
 				onSubmit={handleSubmit}
 				className="flex items-center gap-1.5 border-t border-white/5 pt-2 mt-2 select-none"
 			>
-				<span style={{ color: accentColor }}>bloom@system:~$</span>
+				<span style={{ color: accentColor }}>drift@system:~$</span>
 				<input
 					type="text"
 					value={input}

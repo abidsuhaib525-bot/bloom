@@ -1,5 +1,5 @@
 [package]
-name = "bloom"
+name = "drift"
 version = "3.9.2"
 description = ""
 authors = ["sehaz"]
@@ -12,7 +12,7 @@ license = "GPL-3.0-only"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "bloom_lib"
+name = "drift_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -52,6 +52,8 @@ windows = { version = "0.61", features = [
 	"Win32_System_IO",
 	"Win32_Security",
 	"Win32_System_Registry",
+	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_System_ProcessStatus",
 	"Win32_Devices_FunctionDiscovery",
 	"Devices_Radios",
 	"System_Power",

@@ -278,7 +278,7 @@ impl TrayExposure {
     unsafe fn new() -> Result<Self, String> {
         use std::sync::atomic::Ordering;
         if crate::state::SHUTTING_DOWN.load(Ordering::Relaxed) {
-            return Err("Bloom is shutting down.".into());
+            return Err("Drift is shutting down.".into());
         }
         let hwnd = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null())
             .map_err(|_| "Windows taskbar is unavailable.")?;
@@ -404,7 +404,7 @@ impl TrayExposure {
                     .CurrentName()
                     .is_ok_and(|name| name.to_string().ends_with("Hide"))
                 {
-                    // Explorer remembers an open chevron even after Bloom hides
+                    // Explorer remembers an open chevron even after Drift hides
                     // its host; close that stale state before reopening it.
                     pattern.Invoke().map_err(|e| e.to_string())?;
                 }
@@ -554,7 +554,7 @@ unsafe fn find_overflow_icon(
         }
     }
     if buttons.len() != hidden.len() {
-        // Some overflow icons can't be attributed to a process Bloom can read,
+        // Some overflow icons can't be attributed to a process Drift can read,
         // so positions don't line up. Fall back to the button whose label
         // names the target app, but only when exactly one does and it names
         // no other known icon; otherwise opening a menu could hit another app.

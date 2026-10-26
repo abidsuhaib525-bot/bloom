@@ -1,8 +1,8 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "bloom",
+	"productName": "drift",
 	"version": "3.9.2",
-	"identifier": "com.sehaz.bloom",
+	"identifier": "com.drift.desktop",
 	"build": {
 		"beforeDevCommand": "bun run dev",
 		"devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
 		"windows": [
 			{
 				"label": "main",
-				"title": "bloom",
+				"title": "drift",
 				"width": 1920,
 				"height": 420,
 				"x": 0,
@@ -34,7 +34,7 @@
 			},
 			{
 				"label": "settings",
-				"title": "Settings",
+				"title": "Drift Settings",
 				"url": "settings.html",
 				"width": 620,
 				"height": 480,
@@ -47,7 +47,7 @@
 				"alwaysOnTop": false,
 				"visibleOnAllWorkspaces": false,
 				"focus": true,
-				"skipTaskbar": false,
+				"skipTaskbar": true,
 				"shadow": true,
 				"visible": false,
 				"center": true
@@ -75,7 +75,7 @@
 			},
 			{
 				"label": "dock",
-				"title": "Bloom Dock",
+				"title": "Drift Dock",
 				"url": "dock.html",
 				"width": 1920,
 				"height": 600,
@@ -93,29 +93,57 @@
 				"skipTaskbar": true,
 				"shadow": false,
 				"visible": false
+			},
+			{
+				"label": "launcher",
+				"title": "Drift Launcher",
+				"url": "launcher.html",
+				"width": 720,
+				"height": 520,
+				"decorations": false,
+				"transparent": true,
+				"resizable": false,
+				"maximizable": false,
+				"minimizable": false,
+				"closable": false,
+				"alwaysOnTop": true,
+				"visibleOnAllWorkspaces": false,
+				"focus": true,
+				"skipTaskbar": true,
+				"shadow": false,
+				"visible": false,
+				"center": true
 			}
 		],
 		"security": {
-			"csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://api.open-meteo.com https://geocoding-api.open-meteo.com https://ipapi.co http://ip-api.com https://bloom.sehaz.space"
+			"csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://api.open-meteo.com https://geocoding-api.open-meteo.com https://ipapi.co http://ip-api.com https://drift.abidsuhaib525-bot.com"
 		}
 	},
 	"bundle": {
 		"active": true,
 		"createUpdaterArtifacts": true,
-		"targets": "all",
+		"targets": ["nsis"],
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",
 			"icons/128x128@2x.png",
 			"icons/icon.icns",
 			"icons/icon.ico"
-		]
+		],
+		"windows": {
+			"nsis": {
+				"installMode": "currentUser",
+				"installerIcon": "icons/icon.ico",
+				"languages": ["en-US"],
+				"displayLanguageSelector": false
+			}
+		}
 	},
 	"plugins": {
 		"updater": {
 			"active": true,
 			"endpoints": [
-				"https://github.com/SehajveerSingh2005/bloom/releases/latest/download/latest.json"
+				"https://github.com/abidsuhaib525-bot/drift/releases/latest/download/latest.json"
 			],
 			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzQTAzNTlBRUFFODRFMDUKUldRRlR1anFtaldnUThWRExWQ2ZDVmxhNGlFREFPYWZoV1BWbGdQNUxxdHpnbzZPbGh4SWxVMk0K"
 		}

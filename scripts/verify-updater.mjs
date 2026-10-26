@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repo = "SehajveerSingh2005/bloom";
+const repo = "abidsuhaib525-bot/drift";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tag = process.argv[2];
 

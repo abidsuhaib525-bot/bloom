@@ -2,28 +2,27 @@ import { invoke } from "@tauri-apps/api/core";
 
 // Keys that live only in localStorage by design and never in settings.json.
 const LOCAL_ONLY_KEYS = new Set([
-	"bloom-first-run",
-	"bloom-app-version",
-	"bloom-timer-last-duration",
-	"bloom-announcement-cache",
-	"bloom-announcement-cache-at",
-	// Legacy name, only read as a fallback for bloom-media-visualizer-enabled.
-	"bloom-visualizer-enabled"
+	"drift-first-run",
+	"drift-app-version",
+	"drift-announcement-cache",
+	"drift-announcement-cache-at",
+	// Legacy name, only read as a fallback for drift-media-visualizer-enabled.
+	"drift-visualizer-enabled"
 ]);
 
 // What this window's first render saw: useState initializers read localStorage.
-const mirroredAtStartup = Object.keys(localStorage).filter((key) => key.startsWith("bloom-"));
+const mirroredAtStartup = Object.keys(localStorage).filter((key) => key.startsWith("drift-"));
 
 /**
  * localStorage mirrors settings.json so windows can paint before settings
- * load. A key that settings.json no longer has (edited while Bloom was closed,
+ * load. A key that settings.json no longer has (edited while Drift was closed,
  * or dropped by an import) would otherwise keep coming back from the mirror.
  * If this window started from such a stale value, the stale keys are removed
  * and the window reloads once, so it starts from the defaults. Resolves to
  * true when a reload was triggered.
  */
 export async function reloadIfMirrorWasStale(settings: Record<string, unknown> | null | undefined) {
-	const fileKeys = Object.keys(settings ?? {}).filter((key) => key.startsWith("bloom-"));
+	const fileKeys = Object.keys(settings ?? {}).filter((key) => key.startsWith("drift-"));
 	const stale = mirroredAtStartup.filter(
 		(key) => !fileKeys.includes(key) && !LOCAL_ONLY_KEYS.has(key)
 	);

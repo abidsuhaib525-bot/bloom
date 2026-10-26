@@ -79,7 +79,7 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     // The frontend already checks this, but settings.json may have a stale
     // value if the write didn't complete before restart. Reading here too
     // makes the dock reliably stay hidden regardless of frontend timing.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
+    let enabled = get_setting_str(&app, "drift-dock-enabled").unwrap_or_else(|| "true".to_string());
     if enabled != "true" {
         if let Some(dock_win) = app.get_webview_window("dock") {
             let _ = dock_win.hide();
@@ -185,7 +185,7 @@ pub async fn toggle_dock(app: AppHandle, enable: bool) {
     if let Some(dock_win) = app.get_webview_window("dock") {
         if enable {
             // Load the saved dock mode; "smart" is the fresh-install default.
-            let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
+            let saved_mode = crate::utils::get_setting_str(&app, "drift-dock-mode")
                 .unwrap_or_else(|| "smart".to_string());
             init_dock(app, saved_mode).await;
         } else {
@@ -202,6 +202,17 @@ pub async fn toggle_dock(app: AppHandle, enable: bool) {
 
             // Re-sync other appbars
             crate::services::reconcile_main_appbar(&app);
+
+            // Spawn a brief retry loop to guarantee Windows taskbar stays visible
+            // even if a racing WinEvent/AppBar layout event fired during dock unregistration.
+            tauri::async_runtime::spawn(async {
+                for _ in 0..3 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    if !crate::state::NATIVE_TASKBAR_HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
+                        crate::utils::set_taskbar_visibility(true, true);
+                    }
+                }
+            });
         }
     }
 }
@@ -214,7 +225,7 @@ pub async fn sync_appbar(app: AppHandle) {
     if let Some(dock_win) = app.get_webview_window("dock") {
         // Skip dock re-registration if dock is disabled in settings.
         let dock_enabled =
-            get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
+            get_setting_str(&app, "drift-dock-enabled").unwrap_or_else(|| "true".to_string());
         if dock_enabled == "true" && DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
             register_dock_appbar(dock_win);
         } else {
@@ -230,7 +241,7 @@ pub async fn sync_appbar(app: AppHandle) {
 pub async fn change_dock_mode(app: AppHandle, mode: String) {
     // A disabled dock keeps the new mode in settings (init_dock applies it on
     // re-enable) but must not be shown or replace the native taskbar now.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
+    let enabled = get_setting_str(&app, "drift-dock-enabled").unwrap_or_else(|| "true".to_string());
     if enabled != "true" {
         return;
     }
@@ -360,8 +371,8 @@ pub async fn change_notch_mode(app: AppHandle, mode: String) {
             let m_pos = monitor.position();
             let m_size = monitor.size();
             let scale = monitor.scale_factor();
-            let bloom_scale = crate::utils::get_bloom_scale(&app);
-            let target_height = (420.0 * bloom_scale * scale) as u32;
+            let drift_scale = crate::utils::get_drift_scale(&app);
+            let target_height = (420.0 * drift_scale * scale) as u32;
             let _ = main_win.set_position(tauri::PhysicalPosition::new(m_pos.x, m_pos.y));
             let _ = main_win.set_size(tauri::PhysicalSize::new(m_size.width, target_height));
         }
@@ -369,6 +380,15 @@ pub async fn change_notch_mode(app: AppHandle, mode: String) {
         let current = CURRENT_NOTCH_OVERLAP.load(Ordering::Relaxed);
         if current != -1 {
             let _ = app.emit("notch-overlap", current == 1);
+        }
+
+        // When the notch changes its AppBar reservation, the work area changes.
+        // Windows automatically shifts other AppBars (like our fixed dock) in response.
+        // We must re-register the dock to force it back to the absolute bottom of the screen.
+        if let Some(dock_win) = app.get_webview_window("dock") {
+            if DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
+                crate::services::register_dock_appbar(dock_win);
+            }
         }
     }
 }
@@ -524,7 +544,7 @@ pub async fn open_app(app: AppHandle, app_name: String) {
         return;
     }
 
-    if is_bloom_launch_target(&app_name, &app.config().identifier) {
+    if is_drift_launch_target(&app_name, &app.config().identifier) {
         open_settings_window(app);
         return;
     }
@@ -532,12 +552,12 @@ pub async fn open_app(app: AppHandle, app_name: String) {
     tauri::async_runtime::spawn_blocking(move || launch_path(&app_name));
 }
 
-fn is_bloom_launch_target(target: &str, identifier: &str) -> bool {
-    target == "bloom-settings"
+fn is_drift_launch_target(target: &str, identifier: &str) -> bool {
+    target == "drift-settings"
         || target.eq_ignore_ascii_case(identifier)
         || std::path::Path::new(target)
             .file_name()
-            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("bloom.exe"))
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("drift.exe"))
 }
 
 /// Launches another instance of an app instead of focusing an existing window.
@@ -580,7 +600,7 @@ fn is_pwa_shortcut_for(app: &AppInfo, name: &str, host_exe: &str) -> bool {
 }
 
 /// Opens a file path, shortcut, or shell application id through the shell.
-fn launch_path(path: &str) {
+pub(crate) fn launch_path(path: &str) {
     unsafe {
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -637,37 +657,60 @@ fn launch_path(path: &str) {
         use std::path::Path;
         let mut final_path = path.to_string();
 
-        if !Path::new(&final_path).exists() {
-            let file_name = Path::new(&final_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+        let p = Path::new(&final_path);
+        if p.exists() {
+            let wide_path: Vec<u16> = final_path
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let wide_open: Vec<u16> = "open\0".encode_utf16().collect();
 
-            // Handle Discord/Slack style auto-updaters (app-x.x.x folder structure)
-            if file_name == "discord.exe"
-                || file_name == "slack.exe"
-                || file_name == "githubdesktop.exe"
-                || file_name == "zentwilight.exe"
-            {
-                if let Some(parent) = Path::new(&final_path).parent().and_then(|p| p.parent()) {
-                    if parent.exists() {
-                        if let Ok(entries) = std::fs::read_dir(parent) {
-                            let mut app_dirs = Vec::new();
-                            for entry in entries.flatten() {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                if (name.starts_with("app-") || name.starts_with("current"))
-                                    && entry.path().is_dir()
-                                {
-                                    app_dirs.push(entry.path());
-                                }
+            let res = ShellExecuteW(
+                None,
+                windows::core::PCWSTR(wide_open.as_ptr()),
+                windows::core::PCWSTR(wide_path.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+
+            if res.0 as usize <= 32 {
+                let _ = std::process::Command::new("cmd.exe")
+                    .args(["/c", "start", "", &final_path])
+                    .spawn();
+            }
+            return;
+        }
+
+        let file_name = Path::new(&final_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        // Handle Discord/Slack style auto-updaters (app-x.x.x folder structure)
+        if file_name == "discord.exe"
+            || file_name == "slack.exe"
+            || file_name == "githubdesktop.exe"
+            || file_name == "zentwilight.exe"
+        {
+            if let Some(parent) = Path::new(&final_path).parent().and_then(|p| p.parent()) {
+                if parent.exists() {
+                    if let Ok(entries) = std::fs::read_dir(parent) {
+                        let mut app_dirs = Vec::new();
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if (name.starts_with("app-") || name.starts_with("current"))
+                                && entry.path().is_dir()
+                            {
+                                app_dirs.push(entry.path());
                             }
-                            app_dirs.sort();
-                            if let Some(latest) = app_dirs.last() {
-                                let exe = latest.join(Path::new(&final_path).file_name().unwrap());
-                                if exe.exists() {
-                                    final_path = exe.to_string_lossy().to_string();
-                                }
+                        }
+                        app_dirs.sort();
+                        if let Some(latest) = app_dirs.last() {
+                            let exe = latest.join(Path::new(&final_path).file_name().unwrap());
+                            if exe.exists() {
+                                final_path = exe.to_string_lossy().to_string();
                             }
                         }
                     }
@@ -679,7 +722,7 @@ fn launch_path(path: &str) {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let wide_open: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_open: Vec<u16> = "open\0".encode_utf16().collect();
 
         let res = ShellExecuteW(
             None,
@@ -691,10 +734,9 @@ fn launch_path(path: &str) {
         );
 
         if res.0 as usize <= 32 {
-            eprintln!(
-                "Failed to open app {}: error code {}",
-                final_path, res.0 as usize
-            );
+            let _ = std::process::Command::new("cmd.exe")
+                .args(["/c", "start", "", &final_path])
+                .spawn();
         }
     }
 }
@@ -807,7 +849,7 @@ pub async fn focus_window(hwnd: isize) {
             let _ = ShowWindow(hwnd, SW_RESTORE);
             let _ = SetForegroundWindow(hwnd);
         } else {
-            // Minimize if: window is foreground, OR same process as foreground (not Bloom), OR recently focused
+            // Minimize if: window is foreground, OR same process as foreground (not Drift), OR recently focused
             let fg = GetForegroundWindow();
             let mut should_minimize = false;
 
@@ -1693,7 +1735,7 @@ pub async fn load_pinned_apps(app: AppHandle) -> Vec<AppInfo> {
         },
         AppInfo {
             name: "Settings".into(),
-            path: "bloom-settings".into(),
+            path: "drift-settings".into(),
             icon: None,
             is_running: false,
             hwnd: None,
@@ -1899,6 +1941,7 @@ pub fn hide_native_osd() {
 #[tauri::command]
 pub fn open_settings_window(app: AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.set_skip_taskbar(true);
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -1996,6 +2039,204 @@ pub fn open_notification_center() {
             SW_SHOWNORMAL,
         );
     }
+}
+
+#[tauri::command]
+pub fn open_dnd_settings() {
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            Some(HWND(std::ptr::null_mut())),
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:quiethours".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn get_system_theme_is_dark() -> bool {
+    unsafe {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        };
+        let subkey = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey, Some(0), KEY_READ, &mut hkey).is_ok() {
+            let mut value_type = REG_DWORD;
+            let mut apps_light = 0u32;
+            let mut value_size = std::mem::size_of::<u32>() as u32;
+            let val_name = windows::core::w!("AppsUseLightTheme");
+            let res = RegQueryValueExW(
+                hkey,
+                val_name,
+                None,
+                Some(&mut value_type),
+                Some(&mut apps_light as *mut u32 as *mut u8),
+                Some(&mut value_size),
+            );
+            let _ = RegCloseKey(hkey);
+            if res.is_ok() {
+                return apps_light == 0;
+            }
+        }
+    }
+    true
+}
+
+#[tauri::command]
+pub fn set_system_theme_is_dark(dark: bool) -> Result<bool, String> {
+    unsafe {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_SET_VALUE,
+            REG_DWORD, REG_OPTION_NON_VOLATILE,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        };
+
+        let subkey = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+        let val: u32 = if dark { 0 } else { 1 };
+
+        let create_res = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey,
+            Some(0),
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut hkey,
+            None,
+        );
+
+        if create_res.is_err() {
+            return Err("Failed to open Personalize registry key".into());
+        }
+
+        let val_apps = windows::core::w!("AppsUseLightTheme");
+        let val_sys = windows::core::w!("SystemUsesLightTheme");
+
+        let _ = RegSetValueExW(
+            hkey,
+            val_apps,
+            Some(0),
+            REG_DWORD,
+            Some(std::slice::from_raw_parts(&val as *const u32 as *const u8, 4)),
+        );
+        let _ = RegSetValueExW(
+            hkey,
+            val_sys,
+            Some(0),
+            REG_DWORD,
+            Some(std::slice::from_raw_parts(&val as *const u32 as *const u8, 4)),
+        );
+        let _ = RegCloseKey(hkey);
+
+        let mut param: Vec<u16> = "ImmersiveColorSet".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut dw_result = 0usize;
+        let _ = SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(param.as_mut_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            2000,
+            Some(&mut dw_result),
+        );
+    }
+    Ok(dark)
+}
+
+#[tauri::command]
+pub fn get_dnd_state() -> bool {
+    unsafe {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        };
+        let subkey = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings");
+        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey, Some(0), KEY_READ, &mut hkey).is_ok() {
+            let mut value_type = REG_DWORD;
+            let mut toasts_enabled = 1u32;
+            let mut value_size = std::mem::size_of::<u32>() as u32;
+            let val_name = windows::core::w!("NOC_GLOBAL_SETTING_TOASTS_ENABLED");
+            let res = RegQueryValueExW(
+                hkey,
+                val_name,
+                None,
+                Some(&mut value_type),
+                Some(&mut toasts_enabled as *mut u32 as *mut u8),
+                Some(&mut value_size),
+            );
+            let _ = RegCloseKey(hkey);
+            if res.is_ok() {
+                return toasts_enabled == 0;
+            }
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub fn set_dnd_state(dnd: bool) -> Result<bool, String> {
+    unsafe {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_SET_VALUE,
+            REG_DWORD, REG_OPTION_NON_VOLATILE,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+        };
+
+        let subkey = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings");
+        let mut hkey = windows::Win32::System::Registry::HKEY::default();
+        let val: u32 = if dnd { 0 } else { 1 };
+
+        let create_res = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey,
+            Some(0),
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut hkey,
+            None,
+        );
+
+        if create_res.is_err() {
+            return Err("Failed to open Notifications\\Settings registry key".into());
+        }
+
+        let val_name = windows::core::w!("NOC_GLOBAL_SETTING_TOASTS_ENABLED");
+        let _ = RegSetValueExW(
+            hkey,
+            val_name,
+            Some(0),
+            REG_DWORD,
+            Some(std::slice::from_raw_parts(&val as *const u32 as *const u8, 4)),
+        );
+        let _ = RegCloseKey(hkey);
+
+        let mut param: Vec<u16> = "TraySettings".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut dw_result = 0usize;
+        let _ = SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(param.as_mut_ptr() as isize),
+            SMTO_ABORTIFHUNG,
+            1000,
+            Some(&mut dw_result),
+        );
+    }
+    Ok(dnd)
 }
 
 #[tauri::command]
@@ -2677,7 +2918,7 @@ pub fn release_appbars(handle: &AppHandle) {
     }
 }
 
-/// Restore the native taskbar, unregister Bloom's appbars, and exit gracefully.
+/// Restore the native taskbar, unregister Drift's appbars, and exit gracefully.
 /// Shared by the tray menu, the in-app Quit button, and the window CloseRequested
 /// handlers so that any shutdown path (including Task Manager's WM_CLOSE) behaves
 /// identically.
@@ -2696,12 +2937,12 @@ pub fn restore_taskbar_and_exit(handle: &AppHandle) {
 }
 
 #[tauri::command]
-pub async fn quit_bloom(handle: AppHandle) {
+pub async fn quit_drift(handle: AppHandle) {
     restore_taskbar_and_exit(&handle);
 }
 
 #[tauri::command]
-pub async fn restart_bloom(handle: AppHandle) {
+pub async fn restart_drift(handle: AppHandle) {
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
     if let Some(w) = handle.get_webview_window("main") {
         unregister_appbar_native(w.hwnd().unwrap());
@@ -2741,7 +2982,7 @@ fn re_register_appbars(app: &AppHandle, settings: &HashMap<String, serde_json::V
     crate::services::reconcile_main_appbar(app);
     if let Some(dock_win) = app.get_webview_window("dock") {
         let is_fixed = settings
-            .get("bloom-dock-mode")
+            .get("drift-dock-mode")
             .map(|v| v.as_str() == Some("fixed"))
             .unwrap_or(false);
         if is_fixed {
@@ -2772,13 +3013,13 @@ pub fn save_setting(app: AppHandle, key: String, value: serde_json::Value) -> Re
 
     crate::utils::replace_settings_cache(settings.clone());
 
-    // Broadcast so all windows sync — emit the key as-is (bloom-prefixed)
+    // Broadcast so all windows sync — emit the key as-is (drift-prefixed)
     let _ = app.emit(
         "settings-changed",
         serde_json::json!({ "key": &key, "value": &settings[&key] }),
     );
 
-    if key == "bloom-scale" {
+    if key == "drift-scale" {
         re_register_appbars(&app, &settings);
     }
     Ok(())
@@ -3454,9 +3695,9 @@ pub fn import_settings(app: AppHandle, settings: String) -> Result<(), String> {
     // Keys the imported file doesn't have must leave each window's localStorage
     // mirror too, or they come back from it on the next start. Same sentinels
     // as reset_settings are kept.
-    let keep = ["bloom-first-run", "bloom-app-version"];
+    let keep = ["drift-first-run", "drift-app-version"];
     for key in previous.keys().filter(|key| {
-        key.starts_with("bloom-") && !keep.contains(&key.as_str()) && !imported.contains_key(*key)
+        key.starts_with("drift-") && !keep.contains(&key.as_str()) && !imported.contains_key(*key)
     }) {
         let _ = app.emit(
             "settings-external-changed",
@@ -3464,7 +3705,7 @@ pub fn import_settings(app: AppHandle, settings: String) -> Result<(), String> {
         );
     }
 
-    if imported.get("bloom-scale").is_some() {
+    if imported.get("drift-scale").is_some() {
         re_register_appbars(&app, &imported);
     }
 
@@ -3482,18 +3723,18 @@ pub fn reset_settings(app: AppHandle) -> Result<(), String> {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Keep non-Bloom keys (the file is user-editable) and the first-run/version
+    // Keep non-Drift keys (the file is user-editable) and the first-run/version
     // sentinels (lifecycle markers, not preferences — keeping them avoids
     // replaying the splash after a reset). Everything else falls back to
     // defaults in both the backend and the frontends.
-    let keep = ["bloom-first-run", "bloom-app-version"];
+    let keep = ["drift-first-run", "drift-app-version"];
     let mut settings: HashMap<String, serde_json::Value> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or_default();
     let removed: Vec<String> = settings
         .keys()
-        .filter(|key| key.starts_with("bloom-") && !keep.contains(&key.as_str()))
+        .filter(|key| key.starts_with("drift-") && !keep.contains(&key.as_str()))
         .cloned()
         .collect();
     for key in &removed {
@@ -3505,7 +3746,7 @@ pub fn reset_settings(app: AppHandle) -> Result<(), String> {
     crate::utils::replace_settings_cache(settings);
 
     // Mirror the external-edit watcher so every open window drops the removed
-    // keys from localStorage. The caller restarts Bloom right after, but this
+    // keys from localStorage. The caller restarts Drift right after, but this
     // keeps the reset correct even if a window lingers.
     for key in removed {
         let _ = app.emit(
@@ -3647,16 +3888,16 @@ mod pwa_icon_tests {
     use super::*;
 
     #[test]
-    fn bloom_launch_targets_reuse_the_running_settings_window() {
-        let identifier = "com.sehaz.bloom";
-        assert!(is_bloom_launch_target(identifier, identifier));
-        assert!(is_bloom_launch_target("bloom-settings", identifier));
-        assert!(is_bloom_launch_target(
-            "C:\\Users\\test\\AppData\\Local\\bloom\\bloom.exe",
+    fn drift_launch_targets_reuse_the_running_settings_window() {
+        let identifier = "com.drift.desktop";
+        assert!(is_drift_launch_target(identifier, identifier));
+        assert!(is_drift_launch_target("drift-settings", identifier));
+        assert!(is_drift_launch_target(
+            "C:\\Users\\test\\AppData\\Local\\drift\\drift.exe",
             identifier
         ));
-        assert!(!is_bloom_launch_target("C:\\Apps\\Discord.exe", identifier));
-        assert!(!is_bloom_launch_target("com.other.app", identifier));
+        assert!(!is_drift_launch_target("C:\\Apps\\Discord.exe", identifier));
+        assert!(!is_drift_launch_target("com.other.app", identifier));
     }
 
     #[test]

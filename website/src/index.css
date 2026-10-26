@@ -83,10 +83,10 @@ body {
 }
 
 /* ==========================================================================
-   Bloom Notch CSS (Ported directly from src/App.css)
+   Drift Notch CSS (Ported directly from src/App.css)
    ========================================================================== */
 
-.bloom {
+.drift {
 	display: flex;
 	align-items: center;
 	justify-content: flex-start;
@@ -110,7 +110,7 @@ body {
 	transition: background 0.3s ease;
 }
 
-.bloom.expanded {
+.drift.expanded {
 	--notch-bg: rgba(0, 0, 0, 0.92);
 }
 
@@ -134,8 +134,8 @@ body {
 }
 
 /* Concave top corners ("bridge" to screen edge) */
-.bloom.is-impacted::before,
-.bloom.is-impacted::after {
+.drift.is-impacted::before,
+.drift.is-impacted::after {
 	content: "";
 	position: absolute;
 	top: 0;
@@ -154,7 +154,7 @@ body {
 	}
 }
 
-.bloom.is-impacted::before {
+.drift.is-impacted::before {
 	left: -13px;
 	-webkit-mask-image: radial-gradient(circle at 0% 100%, transparent 12.5px, black 13px);
 	mask-image: radial-gradient(circle at 0% 100%, transparent 12.5px, black 13px);
@@ -167,7 +167,7 @@ body {
 	);
 }
 
-.bloom.is-impacted::after {
+.drift.is-impacted::after {
 	right: -13px;
 	-webkit-mask-image: radial-gradient(circle at 100% 100%, transparent 12.5px, black 13px);
 	mask-image: radial-gradient(circle at 100% 100%, transparent 12.5px, black 13px);
@@ -581,7 +581,7 @@ body {
 }
 
 /* ==========================================================================
-   Bloom Dock CSS (Ported directly from src/Dock.css)
+   Drift Dock CSS (Ported directly from src/Dock.css)
    ========================================================================== */
 
 .dock-container {
@@ -947,27 +947,27 @@ body {
 	z-index: 1;
 }
 
-.bloom.calendar-mode {
+.drift.calendar-mode {
 	padding-top: 4px;
 	border-radius: 0 0 28px 28px !important;
 }
 
 /* ==========================================================================
-   Native Bloom notch parity (ported from the desktop app's App.css)
+   Native Drift notch parity (ported from the desktop app's App.css)
    ========================================================================== */
 
 /* Flat pill like the app — no border */
-.bloom {
+.drift {
 	--notch-bg: rgba(0, 0, 0, 0.8);
 	border: none;
 }
 
-.bloom.expanded {
+.drift.expanded {
 	--notch-bg: rgba(0, 0, 0, 0.92);
 }
 
-.bloom.is-impacted::before,
-.bloom.is-impacted::after {
+.drift.is-impacted::before,
+.drift.is-impacted::after {
 	opacity: 1;
 	animation: none;
 }

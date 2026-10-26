@@ -27,8 +27,8 @@ const getAppIcon = (id: string, color: string, size: number = 20) => {
 		case "about":
 			return (
 				<img
-					src="/bloom.png"
-					alt="Bloom Icon"
+					src="/drift.png"
+					alt="Drift Icon"
 					className="object-contain select-none"
 					style={{ width: `${size}px`, height: `${size}px` }}
 				/>
@@ -60,13 +60,13 @@ const Dock = memo(function Dock({
 	onCloseApp
 }: DockProps) {
 	const [dockItems, setDockItems] = useState<DockItem[]>([
-		{ id: "about", name: "the hell is bloom?!", accent: "#e8c5e5" },
+		{ id: "about", name: "the hell is drift?!", accent: "#e8c5e5" },
 		{ id: "music", name: "moooosic", accent: "#ff2d55" },
-		{ id: "settings", name: "bloom brain surgery", accent: "#8e8e93" },
+		{ id: "settings", name: "drift brain surgery", accent: "#8e8e93" },
 		{ id: "terminal", name: "some crappy hacker window", accent: "#34c759" },
 		{ id: "changelog", name: "what did we break", accent: "#5e9eff" },
 		{ id: "performance", name: "cpu go brrr", accent: "#34d399" },
-		{ id: "features", name: "bloom propaganda", accent: "#a78bfa" },
+		{ id: "features", name: "drift propaganda", accent: "#a78bfa" },
 		{ id: "browser", name: "the internet, probably", accent: "#38bdf8" }
 	]);
 
@@ -117,7 +117,7 @@ const Dock = memo(function Dock({
 	const getAppPreviewContent = (id: string) => {
 		switch (id) {
 			case "about":
-				return "bloom lore";
+				return "drift lore";
 			case "music":
 				return "now playing, probably";
 			case "settings":

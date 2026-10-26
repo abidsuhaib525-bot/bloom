@@ -1,5 +1,5 @@
 import { motion, AnimatePresence, useAnimation } from "framer-motion";
-import { useEffect, useState, useCallback, useRef, memo } from "react";
+import { useEffect, useState, useCallback, useRef, memo, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -30,94 +30,12 @@ import {
 	MemoryStick,
 	HardDrive,
 	ArrowUpDown,
-	BellRing,
-	Play,
-	Pause,
-	RotateCcw,
 	Megaphone,
 	X,
 	ChevronLeft,
-	ChevronRight
+	ChevronRight,
+	Search
 } from "lucide-react";
-
-// Pomodoro timer limit.
-const MAX_TIMER_SECONDS = 180 * 60;
-
-// Inline timer editing: digits fill from the right and the colon is inserted
-// automatically ("130" -> 1:30, "2500" -> 25:00, "45" -> 0:45).
-const timerDigitsToSeconds = (digits: string): number | null => {
-	if (!digits) return null;
-	const secs = parseInt(digits.slice(-2) || "0", 10);
-	const mins = parseInt(digits.slice(0, -2) || "0", 10);
-	const total = mins * 60 + secs;
-	return total > 0 && total <= MAX_TIMER_SECONDS ? total : null;
-};
-
-const timerSecondsToDigits = (seconds: number): string => {
-	const mins = Math.floor(seconds / 60);
-	const secs = seconds % 60;
-	return `${mins}${secs.toString().padStart(2, "0")}`.replace(/^0+(?=\d)/, "");
-};
-
-const formatTimerDigits = (digits: string): string => {
-	if (!digits) return "0:00";
-	const secs = digits.slice(-2).padStart(2, "0");
-	const mins = parseInt(digits.slice(0, -2) || "0", 10);
-	return `${mins}:${secs}`;
-};
-
-// Completion chime for the Pomodoro timer. Synthesized with the Web Audio API
-// so no audio asset is needed; created on the Start click so the webview's
-// autoplay policy lets it play when the timer ends.
-let timerChimeCtx: AudioContext | null = null;
-
-const getTimerChimeCtx = (): AudioContext | null => {
-	try {
-		if (!timerChimeCtx) timerChimeCtx = new AudioContext();
-		if (timerChimeCtx.state === "suspended") timerChimeCtx.resume().catch(() => {});
-		return timerChimeCtx;
-	} catch {
-		return null;
-	}
-};
-
-const playTimerChime = () => {
-	const ctx = getTimerChimeCtx();
-	if (!ctx) return;
-	const start = ctx.currentTime + 0.02;
-	const master = ctx.createGain();
-	master.gain.value = 0.45;
-	master.connect(ctx.destination);
-
-	// Soft rising bell arpeggio (A5–C#6–E6) with a quiet octave harmonic.
-	const notes = [
-		{ freq: 880.0, at: 0 },
-		{ freq: 1108.73, at: 0.18 },
-		{ freq: 1318.51, at: 0.36 }
-	];
-	notes.forEach(({ freq, at }) => {
-		const osc = ctx.createOscillator();
-		const harmonic = ctx.createOscillator();
-		const gain = ctx.createGain();
-		const harmonicGain = ctx.createGain();
-		osc.type = "sine";
-		osc.frequency.value = freq;
-		harmonic.type = "sine";
-		harmonic.frequency.value = freq * 2.01;
-		harmonicGain.gain.value = 0.12;
-		gain.gain.setValueAtTime(0.0001, start + at);
-		gain.gain.exponentialRampToValueAtTime(0.32, start + at + 0.02);
-		gain.gain.exponentialRampToValueAtTime(0.0001, start + at + 1.4);
-		osc.connect(gain);
-		harmonic.connect(harmonicGain);
-		harmonicGain.connect(gain);
-		gain.connect(master);
-		osc.start(start + at);
-		harmonic.start(start + at);
-		osc.stop(start + at + 1.5);
-		harmonic.stop(start + at + 1.5);
-	});
-};
 
 // Simple SVG icons
 function WifiIcon({ enabled, connected }: { enabled: boolean; connected: boolean }) {
@@ -324,43 +242,12 @@ export const Visualizer = memo(function Visualizer({
 	);
 });
 
-// Number of week rows the current month occupies. Calendar mode sizes the
-// notch to the month so five-row months stay compact and six-row months never
-// clip the last row.
-const calendarMonthRows = (() => {
-	const now = new Date();
-	const firstWeekday = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
-	const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+// Helper to calculate how many week rows a given month spans (5 or 6).
+export const getMonthWeekRows = (date: Date) => {
+	const firstWeekday = new Date(date.getFullYear(), date.getMonth(), 1).getDay();
+	const daysInMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
 	return Math.ceil((firstWeekday + daysInMonth) / 7);
-})();
-
-// Odometer-style digit for the timer clock. When the value changes the old
-// digit rolls up and out while the new one rolls in from below with a slight
-// 3D tilt — no card chrome, just the numerals.
-const RollDigit = memo(function RollDigit({
-	value,
-	compact = false
-}: {
-	value: string;
-	compact?: boolean;
-}) {
-	return (
-		<span className={`roll-digit ${compact ? "compact" : ""}`}>
-			<AnimatePresence initial={false}>
-				<motion.span
-					key={value}
-					className="roll-num"
-					initial={{ y: "72%", rotateX: -50, opacity: 0 }}
-					animate={{ y: "0%", rotateX: 0, opacity: 1 }}
-					exit={{ y: "-72%", rotateX: 50, opacity: 0 }}
-					transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-				>
-					{value}
-				</motion.span>
-			</AnimatePresence>
-		</span>
-	);
-});
+};
 
 interface MediaInfo {
 	title: string;
@@ -438,14 +325,12 @@ function App() {
 
 	const [time, setTime] = useState("");
 	const [isHovered, setIsHovered] = useState(false);
-	// Set once the open notch is clicked; shows the panel arrows until hover ends.
-	const [notchClicked, setNotchClicked] = useState(false);
 	const [isReady, setIsReady] = useState(false);
 	const [scale, setScale] = useState(() =>
-		parseFloat(localStorage.getItem("bloom-scale") || "1.0")
+		parseFloat(localStorage.getItem("drift-scale") || "1.0")
 	);
 	const [timeFormat24h, setTimeFormat24h] = useState(
-		() => localStorage.getItem("bloom-time-format-24h") === "true"
+		() => localStorage.getItem("drift-time-format-24h") === "true"
 	);
 
 	const [batteryLevel, setBatteryLevel] = useState(100);
@@ -453,7 +338,7 @@ function App() {
 	const [showPowerPulse, setShowPowerPulse] = useState(false);
 	const [showLowBatteryPulse, setShowLowBatteryPulse] = useState(false);
 	const [lowBatteryThreshold, setLowBatteryThreshold] = useState(() =>
-		parseInt(localStorage.getItem("bloom-low-battery-threshold") || "20")
+		parseInt(localStorage.getItem("drift-low-battery-threshold") || "20")
 	);
 	const prevChargingRef = useRef<boolean | null>(null);
 	const powerPulseTimeoutRef = useRef<any>(null);
@@ -469,7 +354,7 @@ function App() {
 	}, []);
 
 	const [notchMode, setNotchMode] = useState(() => {
-		const raw = localStorage.getItem("bloom-notch-mode") || "fixed";
+		const raw = localStorage.getItem("drift-notch-mode") || "fixed";
 		if (raw === "auto-hide") return "smart";
 		return raw;
 	});
@@ -516,6 +401,10 @@ function App() {
 		is_playing: false,
 		has_media: false
 	});
+	// Drift mode state: 'music', 'calendar', 'command-center', 'announcement', or 'status'
+	const [driftMode, setDriftMode] = useState<
+		"music" | "calendar" | "command-center" | "announcement" | "status"
+	>("status");
 	const [albumArtUrl, setAlbumArtUrl] = useState<string | null>(null);
 	const [albumArtKey, setAlbumArtKey] = useState(0);
 	const [volume, setVolume] = useState(0.5);
@@ -550,7 +439,7 @@ function App() {
 	// Update state
 	const [updateAvailable, setUpdateAvailable] = useState(false);
 	const [showUpdateIndicator, setShowUpdateIndicator] = useState(
-		() => localStorage.getItem("bloom-show-update-indicator") !== "false"
+		() => localStorage.getItem("drift-show-update-indicator") !== "false"
 	);
 	const [showUpdatePulse, setShowUpdatePulse] = useState(false);
 
@@ -610,27 +499,34 @@ function App() {
 	const [startupAnimating, setStartupAnimating] = useState(false);
 
 	const [dockMode, setDockMode] = useState(() => {
-		const raw = localStorage.getItem("bloom-dock-mode") || "smart";
+		const raw = localStorage.getItem("drift-dock-mode") || "smart";
 		if (raw === "auto-hide") return "smart";
 		return raw;
 	});
 	const [dndActive, setDndActive] = useState(false);
+	const [systemIsDark, setSystemIsDark] = useState(() => {
+		const m = localStorage.getItem("drift-theme-mode") || "dark";
+		return m !== "light";
+	});
 	const [dockEnabled, setDockEnabled] = useState(
-		() => localStorage.getItem("bloom-dock-enabled") !== "false"
+		() => localStorage.getItem("drift-dock-enabled") !== "false"
 	);
 	const [isNotchHovered, setIsNotchHovered] = useState(false);
 
 	const [isEdgeHovered, setIsEdgeHovered] = useState(false);
 	const [isOverlapped, setIsOverlapped] = useState(false);
 	const [interactionState, setInteractionState] = useState<"active" | "grace" | "none">("none");
-	const bloomRef = useRef<HTMLDivElement>(null);
+	const driftRef = useRef<HTMLDivElement>(null);
 	const dockEnabledInitial = useRef(true);
 	const dockModeInitial = useRef(true);
 	const notchModeInitial = useRef(true);
 
 	const isAnyInteraction = isHovered || isNotchHovered || isEdgeHovered;
+	// Do not hide the notch while music is actively playing or in music mode (Apple Dynamic Island / macOS behavior)
+	const isMusicActive = Boolean(mediaInfo.has_media && (isPlaying || driftMode === "music"));
 	const isHidden =
 		!startupAnimating &&
+		!isMusicActive &&
 		((notchMode === "smart" && isOverlapped && interactionState === "none") ||
 			(notchMode === "peek" && interactionState === "none" && !eventPeek));
 
@@ -661,8 +557,8 @@ function App() {
 
 	useEffect(() => {
 		const updateRect = () => {
-			if (bloomRef.current && windowLabel === "main") {
-				const rect = bloomRef.current.getBoundingClientRect();
+			if (driftRef.current && windowLabel === "main") {
+				const rect = driftRef.current.getBoundingClientRect();
 				invoke("update_notch_rect", {
 					rect: {
 						x: Math.round(rect.x),
@@ -677,7 +573,7 @@ function App() {
 		updateRect();
 		window.addEventListener("resize", updateRect);
 		const observer = new ResizeObserver(updateRect);
-		if (bloomRef.current) observer.observe(bloomRef.current);
+		if (driftRef.current) observer.observe(driftRef.current);
 
 		return () => {
 			window.removeEventListener("resize", updateRect);
@@ -727,8 +623,8 @@ function App() {
 		// Overlay always emits splash-done, but on a normal relaunch it emits it near-instantly
 		// (after one async getVersion() call) — before this listener would be registered.
 		// By making the same decision here we avoid a race and avoid any unnecessary delay.
-		const firstRun = localStorage.getItem("bloom-first-run") === null;
-		const storedVersion = localStorage.getItem("bloom-app-version");
+		const firstRun = localStorage.getItem("drift-first-run") === null;
+		const storedVersion = localStorage.getItem("drift-app-version");
 
 		const waitForSplash = () => {
 			// Splash is definitely coming — register listener now (2800ms animation gives us plenty of time)
@@ -781,37 +677,29 @@ function App() {
 
 	// Settings state
 	const [settingsWeatherEnabled, setSettingsWeatherEnabled] = useState(
-		() => localStorage.getItem("bloom-weather-enabled") !== "false"
+		() => localStorage.getItem("drift-weather-enabled") !== "false"
 	);
 	const [settingsCalendarEnabled, setSettingsCalendarEnabled] = useState(
-		() => localStorage.getItem("bloom-calendar-enabled") !== "false"
-	);
-	const [settingsTimerSoundEnabled, setSettingsTimerSoundEnabled] = useState(
-		() => localStorage.getItem("bloom-timer-sound-enabled") !== "false"
+		() => localStorage.getItem("drift-calendar-enabled") !== "false"
 	);
 	const [settingsMusicModeEnabled, setSettingsMusicModeEnabled] = useState(
-		() => localStorage.getItem("bloom-music-mode-enabled") !== "false"
+		() => localStorage.getItem("drift-music-mode-enabled") !== "false"
 	);
 	const [settingsMusicCompactNotch, setSettingsMusicCompactNotch] = useState(
-		() => localStorage.getItem("bloom-music-compact-notch") !== "false"
+		() => localStorage.getItem("drift-music-compact-notch") !== "false"
 	);
 	const [settingsVisualizerEnabled, setSettingsVisualizerEnabled] = useState(
-		() => localStorage.getItem("bloom-visualizer-enabled") !== "false"
+		() => localStorage.getItem("drift-visualizer-enabled") !== "false"
 	);
 	const [settingsAlbumArtEnabled, setSettingsAlbumArtEnabled] = useState(
-		() => localStorage.getItem("bloom-media-album-art-enabled") !== "false"
+		() => localStorage.getItem("drift-media-album-art-enabled") !== "false"
 	);
-	const [settingsAmbienceEnabled, setSettingsAmbienceEnabled] = useState(
-		() => localStorage.getItem("bloom-media-ambience-enabled") !== "false"
-	);
-	const [settingsCompactGlowEnabled, setSettingsCompactGlowEnabled] = useState(
-		() => localStorage.getItem("bloom-media-compact-glow-enabled") !== "false"
-	);
-	const [settingsCornersEnabled, setSettingsCornersEnabled] = useState(
-		() => localStorage.getItem("bloom-corners-enabled") === "true"
-	);
+	const [settingsMediaGlowIntensity, setSettingsMediaGlowIntensity] = useState<number>(() => {
+		const saved = localStorage.getItem("drift-media-glow-intensity");
+		return saved !== null ? parseFloat(saved) : 1.0;
+	});
 	const [mediaLayout, setMediaLayout] = useState<"classic" | "compact">(
-		() => (localStorage.getItem("bloom-media-layout") as "classic" | "compact") || "classic"
+		() => (localStorage.getItem("drift-media-layout") as "classic" | "compact") || "classic"
 	);
 	const [compactVolumeExpanded, setCompactVolumeExpanded] = useState(false);
 
@@ -838,45 +726,41 @@ function App() {
 					return fallback;
 				};
 
-				setSettingsWeatherEnabled(getVal("bloom-weather-enabled", "true") !== "false");
-				setSettingsCalendarEnabled(getVal("bloom-calendar-enabled", "true") !== "false");
-				setSettingsTimerSoundEnabled(getVal("bloom-timer-sound-enabled", "true") !== "false");
-				setSettingsMusicModeEnabled(getVal("bloom-music-mode-enabled", "true") !== "false");
-				setSettingsMusicCompactNotch(getVal("bloom-music-compact-notch", "true") !== "false");
+				setSettingsWeatherEnabled(getVal("drift-weather-enabled", "true") !== "false");
+				setSettingsCalendarEnabled(getVal("drift-calendar-enabled", "true") !== "false");
+				setSettingsMusicModeEnabled(getVal("drift-music-mode-enabled", "true") !== "false");
+				setSettingsMusicCompactNotch(getVal("drift-music-compact-notch", "true") !== "false");
 				const viz =
-					getVal("bloom-media-visualizer-enabled") ?? getVal("bloom-visualizer-enabled", "true");
+					getVal("drift-media-visualizer-enabled") ?? getVal("drift-visualizer-enabled", "true");
 				setSettingsVisualizerEnabled(viz !== "false");
-				setSettingsAlbumArtEnabled(getVal("bloom-media-album-art-enabled", "true") !== "false");
-				setSettingsAmbienceEnabled(getVal("bloom-media-ambience-enabled", "true") !== "false");
-				setSettingsCompactGlowEnabled(
-					getVal("bloom-media-compact-glow-enabled", "true") !== "false"
-				);
-				setSettingsCornersEnabled(getVal("bloom-corners-enabled", "false") === "true");
-				setTimeFormat24h(getVal("bloom-time-format-24h") === "true");
+				setSettingsAlbumArtEnabled(getVal("drift-media-album-art-enabled", "true") !== "false");
+				const glowVal = getVal("drift-media-glow-intensity", "1.0");
+				setSettingsMediaGlowIntensity(glowVal !== null ? parseFloat(glowVal) : 1.0);
+				setTimeFormat24h(getVal("drift-time-format-24h") === "true");
 
-				const thresholdStr = getVal("bloom-low-battery-threshold", "20");
+				const thresholdStr = getVal("drift-low-battery-threshold", "20");
 				if (thresholdStr) setLowBatteryThreshold(parseInt(thresholdStr as string));
 
-				const nMode = getVal("bloom-notch-mode", "fixed");
+				const nMode = getVal("drift-notch-mode", "fixed");
 				if (nMode) {
 					const mapped = nMode === "auto-hide" ? "smart" : nMode;
 					setNotchMode(mapped);
 				}
 
 				if (windowLabel === "main") {
-					const firstRun = localStorage.getItem("bloom-first-run") === null;
+					const firstRun = localStorage.getItem("drift-first-run") === null;
 					if (firstRun) {
 						import("@tauri-apps/plugin-autostart").then(({ enable, isEnabled }) => {
 							isEnabled().then((enabled) => {
 								if (!enabled) enable().catch(() => {});
 							});
 						});
-						localStorage.setItem("bloom-first-run", "done");
+						localStorage.setItem("drift-first-run", "done");
 					}
-					const rawDockMode = getVal("bloom-dock-mode", "smart") as string;
+					const rawDockMode = getVal("drift-dock-mode", "smart") as string;
 					const dockMode = rawDockMode === "auto-hide" ? "smart" : rawDockMode;
 					const syncWindows = async () => {
-						const dockEnabled = getVal("bloom-dock-enabled", "true") === "true";
+						const dockEnabled = getVal("drift-dock-enabled", "true") === "true";
 						if (dockEnabled) {
 							await invoke("init_dock", { mode: dockMode });
 						}
@@ -884,7 +768,7 @@ function App() {
 						await invoke("sync_appbar");
 					};
 
-					const dockEnabled = getVal("bloom-dock-enabled", "true") === "true";
+					const dockEnabled = getVal("drift-dock-enabled", "true") === "true";
 					const runDockInit = () => {
 						// 1. Snappy initial sync
 						setTimeout(syncWindows, 400);
@@ -916,7 +800,7 @@ function App() {
 						}, 6000);
 					};
 
-					const storedVersion = localStorage.getItem("bloom-app-version");
+					const storedVersion = localStorage.getItem("drift-app-version");
 					if (firstRun || storedVersion === null) {
 						runDockInitAfterSplash();
 					} else {
@@ -932,10 +816,10 @@ function App() {
 					}
 				}
 
-				const scaleVal = getVal("bloom-scale");
+				const scaleVal = getVal("drift-scale");
 				if (scaleVal !== null) setScale(parseFloat(scaleVal));
 
-				const widgetsVal = getVal("bloom-status-widgets");
+				const widgetsVal = getVal("drift-status-widgets");
 				if (widgetsVal) {
 					try {
 						const parsed = JSON.parse(widgetsVal);
@@ -976,24 +860,21 @@ function App() {
 	// Settings sync — consolidated dispatch for all settings events
 	useSettingsSync(
 		{
-			"bloom-weather-enabled": setSettingsWeatherEnabled,
-			"bloom-calendar-enabled": setSettingsCalendarEnabled,
-			"bloom-timer-sound-enabled": setSettingsTimerSoundEnabled,
-			"bloom-music-mode-enabled": setSettingsMusicModeEnabled,
-			"bloom-music-compact-notch": setSettingsMusicCompactNotch,
-			"bloom-media-visualizer-enabled": setSettingsVisualizerEnabled,
-			"bloom-visualizer-enabled": setSettingsVisualizerEnabled,
-			"bloom-media-album-art-enabled": setSettingsAlbumArtEnabled,
-			"bloom-media-ambience-enabled": setSettingsAmbienceEnabled,
-			"bloom-media-compact-glow-enabled": setSettingsCompactGlowEnabled,
-			"bloom-media-layout": setMediaLayout,
-			"bloom-corners-enabled": setSettingsCornersEnabled,
-			"bloom-scale": setScale,
-			"bloom-low-battery-threshold": setLowBatteryThreshold,
-			"bloom-dock-enabled": setDockEnabled,
-			"bloom-dock-mode": setDockMode,
-			"bloom-notch-mode": setNotchMode,
-			"bloom-status-widgets": (value) => {
+			"drift-weather-enabled": setSettingsWeatherEnabled,
+			"drift-calendar-enabled": setSettingsCalendarEnabled,
+			"drift-music-mode-enabled": setSettingsMusicModeEnabled,
+			"drift-music-compact-notch": setSettingsMusicCompactNotch,
+			"drift-media-visualizer-enabled": setSettingsVisualizerEnabled,
+			"drift-visualizer-enabled": setSettingsVisualizerEnabled,
+			"drift-media-album-art-enabled": setSettingsAlbumArtEnabled,
+			"drift-media-glow-intensity": (v) => setSettingsMediaGlowIntensity(parseFloat(v)),
+			"drift-media-layout": setMediaLayout,
+			"drift-scale": setScale,
+			"drift-low-battery-threshold": setLowBatteryThreshold,
+			"drift-dock-enabled": setDockEnabled,
+			"drift-dock-mode": setDockMode,
+			"drift-notch-mode": setNotchMode,
+			"drift-status-widgets": (value) => {
 				try {
 					const parsed = JSON.parse(value);
 					if (parsed && Array.isArray(parsed.left) && Array.isArray(parsed.right)) {
@@ -1001,8 +882,8 @@ function App() {
 					}
 				} catch {}
 			},
-			"bloom-show-update-indicator": (value) => setShowUpdateIndicator(String(value) === "true"),
-			"bloom-time-format-24h": setTimeFormat24h
+			"drift-show-update-indicator": (value) => setShowUpdateIndicator(String(value) === "true"),
+			"drift-time-format-24h": setTimeFormat24h
 		},
 		[windowLabel]
 	);
@@ -1015,7 +896,7 @@ function App() {
 			return;
 		}
 		if (dockEnabled) {
-			invoke("init_dock", { mode: localStorage.getItem("bloom-dock-mode") || "smart" });
+			invoke("init_dock", { mode: localStorage.getItem("drift-dock-mode") || "smart" });
 		} else {
 			invoke("toggle_dock", { enable: false });
 		}
@@ -1043,33 +924,31 @@ function App() {
 		invoke("change_notch_mode", { mode: notchMode });
 	}, [notchMode, windowLabel]);
 
-	// Bloom mode state: 'music', 'calendar', 'command-center', 'announcement', or 'status'
-	const [bloomMode, setBloomMode] = useState<
-		"music" | "calendar" | "command-center" | "announcement" | "status"
-	>("status");
+	// Track the active calendar month date so dynamic island height responds immediately to 5 vs 6 week rows
+	const [calendarDate, setCalendarDate] = useState(() => new Date());
 
 	// Open the notch on an unseen announcement; stays open until dismissed.
 	useEffect(() => {
 		if (!announcement || announcementDismissed) return;
 		if (announcementShownRef.current === announcement.id) return;
 		announcementShownRef.current = announcement.id;
-		setBloomMode("announcement");
+		setDriftMode("announcement");
 		if (notchMode === "peek") triggerEventPeek(6000);
 	}, [announcement, announcementDismissed, notchMode, triggerEventPeek]);
 
 	// Leave the announcement view once it is dismissed (or gone).
 	useEffect(() => {
-		if (bloomMode === "announcement" && (!announcement || announcementDismissed)) {
-			setBloomMode(mediaInfo.has_media && isPlaying ? "music" : "status");
+		if (driftMode === "announcement" && (!announcement || announcementDismissed)) {
+			setDriftMode(mediaInfo.has_media && isPlaying ? "music" : "status");
 		}
-	}, [bloomMode, announcement, announcementDismissed, mediaInfo.has_media, isPlaying]);
+	}, [driftMode, announcement, announcementDismissed, mediaInfo.has_media, isPlaying]);
 
 	// Window height is now kept constant to prevent rendering layout lag and sharp corners
 
 	const lastScrollTime = useRef(0);
 	const handleWheel = (e: React.WheelEvent) => {
 		const target = e.target as HTMLElement;
-		if (target.closest(".calendar-grid") || target.closest(".timer-column")) {
+		if (target.closest(".calendar-grid")) {
 			return;
 		}
 
@@ -1082,7 +961,7 @@ function App() {
 		const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
 		if (Math.abs(delta) < 5) return; // Ignore tiny movements
 
-		if (cycleBloomMode(delta > 0 ? 1 : -1)) lastScrollTime.current = now;
+		if (cycleDriftMode(delta > 0 ? 1 : -1)) lastScrollTime.current = now;
 	};
 
 	const getCyclableModes = () => {
@@ -1102,177 +981,18 @@ function App() {
 
 	// Moves to the next (1) or previous (-1) notch panel. Shared by the scroll
 	// wheel and the panel arrows; returns whether the panel changed.
-	const cycleBloomMode = (direction: 1 | -1) => {
+	const cycleDriftMode = (direction: 1 | -1) => {
 		// The announcement card is closed explicitly, not cycled away.
-		if (bloomMode === "announcement") return false;
+		if (driftMode === "announcement") return false;
 		const availableModes = getCyclableModes();
-		const currentIndex = availableModes.indexOf(bloomMode);
+		const currentIndex = availableModes.indexOf(driftMode);
 		if (currentIndex === -1) return false;
 		const nextMode =
 			availableModes[(currentIndex + direction + availableModes.length) % availableModes.length];
 		manualMusicRef.current = nextMode === "music";
-		setBloomMode(nextMode);
+		setDriftMode(nextMode);
 		return true;
 	};
-
-	// Timer state
-	const [timerSeconds, setTimerSeconds] = useState(0);
-	const [isTimerRunning, setIsTimerRunning] = useState(false);
-	const [isTimerFinished, setIsTimerFinished] = useState(false);
-	const [isEditingTimer, setIsEditingTimer] = useState(false);
-	const [timerEditDigits, setTimerEditDigits] = useState("");
-	const [lastDurationSeconds, setLastDurationSeconds] = useState(() => {
-		const stored = parseInt(localStorage.getItem("bloom-timer-last-duration") || "", 10);
-		return Number.isFinite(stored) && stored > 0 ? stored : 25 * 60;
-	});
-	const timerInputRef = useRef<HTMLInputElement>(null);
-	const timerEditActiveRef = useRef(false);
-	const timerIntervalRef = useRef<any>(null);
-	const prevTimerFinishedRef = useRef(false);
-
-	const formatTimerTime = (totalSeconds: number) => {
-		const mins = Math.floor(Math.abs(totalSeconds) / 60);
-		const secs = Math.abs(totalSeconds) % 60;
-		return `${mins}:${secs.toString().padStart(2, "0")}`;
-	};
-
-	const startTimer = (seconds: number) => {
-		// Unlock audio here (user gesture) so the completion chime can play later.
-		getTimerChimeCtx();
-		timerEditActiveRef.current = false;
-		setIsEditingTimer(false);
-		setTimerSeconds(seconds);
-		setLastDurationSeconds(seconds);
-		localStorage.setItem("bloom-timer-last-duration", String(seconds));
-		setIsTimerRunning(true);
-		setIsTimerFinished(false);
-	};
-
-	const resetTimer = () => {
-		timerEditActiveRef.current = false;
-		setIsEditingTimer(false);
-		setIsTimerRunning(false);
-		setTimerSeconds(0);
-		setIsTimerFinished(false);
-	};
-
-	// Idle/finished play restarts the last duration; paused play resumes.
-	const handlePrimaryTimerAction = () => {
-		if (isEditingTimer) {
-			commitTimerEdit(true);
-		} else if (isTimerRunning) {
-			setIsTimerRunning(false);
-		} else if (timerSeconds > 0) {
-			getTimerChimeCtx();
-			setIsTimerRunning(true);
-		} else {
-			startTimer(lastDurationSeconds);
-		}
-	};
-
-	// Clicking the big time turns it into a masked editor. Digits fill from the
-	// right, so the colon never has to be typed.
-	const beginTimerEdit = () => {
-		if (isTimerRunning || isEditingTimer) return;
-		if (isTimerFinished) resetTimer();
-		const base = timerSeconds > 0 ? timerSeconds : lastDurationSeconds;
-		setTimerEditDigits(timerSecondsToDigits(base));
-		timerEditActiveRef.current = true;
-		setIsEditingTimer(true);
-	};
-
-	const commitTimerEdit = (start: boolean) => {
-		if (!timerEditActiveRef.current) return;
-		timerEditActiveRef.current = false;
-		setIsEditingTimer(false);
-		const total = timerDigitsToSeconds(timerEditDigits);
-		if (total === null) return;
-		const base = timerSeconds > 0 ? timerSeconds : lastDurationSeconds;
-		// A tap that changes nothing (e.g. paused timer) must not reset the state.
-		if (!start && total === base) return;
-		localStorage.setItem("bloom-timer-last-duration", String(total));
-		setLastDurationSeconds(total);
-		setTimerSeconds(start ? total : 0);
-		setIsTimerRunning(start);
-		setIsTimerFinished(false);
-		if (start) getTimerChimeCtx();
-	};
-
-	useEffect(() => {
-		if (isEditingTimer) {
-			timerInputRef.current?.focus();
-			timerInputRef.current?.select();
-		}
-	}, [isEditingTimer]);
-
-	const timerEditValid = timerDigitsToSeconds(timerEditDigits) !== null;
-
-	const timerState: "idle" | "running" | "paused" | "finished" = isEditingTimer
-		? "idle"
-		: isTimerFinished
-			? "finished"
-			: isTimerRunning
-				? "running"
-				: timerSeconds > 0
-					? "paused"
-					: "idle";
-	const timerDisplaySeconds =
-		timerSeconds > 0 || isTimerFinished ? timerSeconds : lastDurationSeconds;
-	const primaryTimerLabel = isTimerRunning
-		? "Pause"
-		: timerSeconds > 0
-			? "Resume"
-			: isTimerFinished
-				? "Restart"
-				: "Start";
-	const timerEndTime =
-		timerSeconds > 0 && !isTimerFinished
-			? new Date(Date.now() + timerSeconds * 1000).toLocaleTimeString([], {
-					hour: "2-digit",
-					minute: "2-digit",
-					hour12: !timeFormat24h
-				})
-			: null;
-
-	// Split the display time into individual flip-clock digits. Keys are counted
-	// from the right so existing digits keep their identity when minutes grow
-	// from two digits to three. While editing, the same clock renders the digits
-	// being typed so the layout never changes.
-	const clockText = isEditingTimer
-		? formatTimerDigits(timerEditDigits)
-		: formatTimerTime(timerDisplaySeconds);
-	const [clockMinutesText, clockSecondsText] = clockText.split(":");
-	const clockMinutesPadded = clockMinutesText.padStart(2, "0");
-	const clockCompact = clockMinutesPadded.length > 2;
-	const minuteDigitItems = clockMinutesPadded
-		.split("")
-		.map((digit, i, arr) => ({ digit, key: `m${arr.length - i}` }));
-	const secondDigitItems = clockSecondsText
-		.split("")
-		.map((digit, i, arr) => ({ digit, key: `s${arr.length - i}` }));
-
-	useEffect(() => {
-		if (isTimerRunning && timerSeconds > 0) {
-			timerIntervalRef.current = setInterval(() => {
-				setTimerSeconds((s) => s - 1);
-			}, 1000);
-		} else if (isTimerRunning && timerSeconds === 0) {
-			setIsTimerRunning(false);
-			setIsTimerFinished(true);
-		}
-		return () => {
-			if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-		};
-	}, [isTimerRunning, timerSeconds === 0]);
-
-	// Completion moment: chime once and reveal the notch in peek mode.
-	useEffect(() => {
-		if (isTimerFinished && !prevTimerFinishedRef.current) {
-			if (settingsTimerSoundEnabled) playTimerChime();
-			if (notchMode === "peek") triggerEventPeek(6000);
-		}
-		prevTimerFinishedRef.current = isTimerFinished;
-	}, [isTimerFinished, settingsTimerSoundEnabled, notchMode, triggerEventPeek]);
 
 	const lastTrackRef = useRef<string | null>(null);
 	const lastPlayingRef = useRef<boolean>(false);
@@ -1294,14 +1014,14 @@ function App() {
 			settingsMusicModeEnabled &&
 			mediaInfo.has_media &&
 			isPlaying &&
-			bloomMode !== "calendar" &&
+			driftMode !== "calendar" &&
 			!announcementOpenRef.current &&
 			(isNewTrackWhilePlaying || justStartedPlaying)
 		) {
 			// Switch if compact notch display is enabled OR we are hovered
 			if (settingsMusicCompactNotch || isHovered) {
 				manualMusicRef.current = false;
-				setBloomMode("music");
+				setDriftMode("music");
 			}
 		}
 
@@ -1314,7 +1034,7 @@ function App() {
 		settingsMusicModeEnabled,
 		settingsMusicCompactNotch,
 		isHovered,
-		bloomMode,
+		driftMode,
 		notchMode,
 		triggerEventPeek
 	]);
@@ -1323,54 +1043,54 @@ function App() {
 	// Skip if user manually scrolled to music mode
 	useEffect(() => {
 		let timer: any;
-		if (!isPlaying && bloomMode === "music" && !manualMusicRef.current) {
+		if (!isPlaying && driftMode === "music" && !manualMusicRef.current) {
 			timer = setTimeout(() => {
-				setBloomMode("status");
+				setDriftMode("status");
 			}, 5000);
 		}
 		return () => clearTimeout(timer);
-	}, [isPlaying, bloomMode]);
+	}, [isPlaying, driftMode]);
 
-	// Reset bloom mode when calendar setting is disabled
+	// Reset drift mode when calendar setting is disabled
 	useEffect(() => {
-		if (!settingsCalendarEnabled && bloomMode === "calendar") {
-			setBloomMode("status");
+		if (!settingsCalendarEnabled && driftMode === "calendar") {
+			setDriftMode("status");
 		}
-	}, [settingsCalendarEnabled, bloomMode]);
+	}, [settingsCalendarEnabled, driftMode]);
 
-	// Reset bloom mode when music mode setting is disabled
+	// Reset drift mode when music mode setting is disabled
 	useEffect(() => {
-		if (!settingsMusicModeEnabled && bloomMode === "music") {
-			setBloomMode("status");
+		if (!settingsMusicModeEnabled && driftMode === "music") {
+			setDriftMode("status");
 		}
-	}, [settingsMusicModeEnabled, bloomMode]);
+	}, [settingsMusicModeEnabled, driftMode]);
 
-	// Reset bloom mode when compact notch display is disabled while collapsed
+	// Reset drift mode when compact notch display is disabled while collapsed
 	useEffect(() => {
-		if (!settingsMusicCompactNotch && bloomMode === "music" && !isHovered) {
-			setBloomMode("status");
+		if (!settingsMusicCompactNotch && driftMode === "music" && !isHovered) {
+			setDriftMode("status");
 		}
-	}, [settingsMusicCompactNotch, bloomMode, isHovered]);
+	}, [settingsMusicCompactNotch, driftMode, isHovered]);
 
-	// Synchronize bloom mode immediately when music settings are toggled and music is playing
+	// Synchronize drift mode immediately when music settings are toggled and music is playing
 	useEffect(() => {
 		if (
 			settingsMusicModeEnabled &&
 			settingsMusicCompactNotch &&
 			mediaInfo.has_media &&
 			isPlaying &&
-			bloomMode === "status" &&
+			driftMode === "status" &&
 			!announcementOpenRef.current &&
 			!isHovered
 		) {
-			setBloomMode("music");
+			setDriftMode("music");
 		}
 	}, [
 		settingsMusicModeEnabled,
 		settingsMusicCompactNotch,
 		mediaInfo.has_media,
 		isPlaying,
-		bloomMode,
+		driftMode,
 		isHovered
 	]);
 
@@ -1484,24 +1204,36 @@ function App() {
 		invoke<number>("get_brightness")
 			.then(setCurrentBrightness)
 			.catch(() => {});
+		invoke<boolean>("get_dnd_state")
+			.then(setDndActive)
+			.catch(() => {});
+		invoke<boolean>("get_system_theme_is_dark")
+			.then(setSystemIsDark)
+			.catch(() => {});
 
-		// Poll battery saver state every 5s (since we can't listen for changes)
+		// Poll battery saver and system states every 5s
 		const interval = setInterval(() => {
 			invoke<boolean>("get_battery_saver_state")
 				.then(setBatterySaverEnabled)
+				.catch(() => {});
+			invoke<boolean>("get_dnd_state")
+				.then(setDndActive)
+				.catch(() => {});
+			invoke<boolean>("get_system_theme_is_dark")
+				.then(setSystemIsDark)
 				.catch(() => {});
 		}, 5000);
 		return () => clearInterval(interval);
 	}, []);
 
 	// Refresh Wi-Fi status while the command center is open so changes made
-	// outside Bloom (keyboard toggle, Windows quick settings) show up.
+	// outside Drift (keyboard toggle, Windows quick settings) show up.
 	useEffect(() => {
-		if (bloomMode !== "command-center") return;
+		if (driftMode !== "command-center") return;
 		void refreshWifiStatus();
 		const interval = setInterval(() => void refreshWifiStatus(), 5000);
 		return () => clearInterval(interval);
-	}, [bloomMode, refreshWifiStatus]);
+	}, [driftMode, refreshWifiStatus]);
 
 	// Poll system metrics for status widgets
 	useEffect(() => {
@@ -1728,6 +1460,41 @@ function App() {
 		}
 	}, []);
 
+	// DND toggle & right click
+	const toggleDnd = useCallback(async (e: React.MouseEvent) => {
+		e.stopPropagation();
+		const next = !dndActive;
+		setDndActive(next);
+		try {
+			await invoke("set_dnd_state", { dnd: next });
+		} catch (err) {
+			setDndActive(!next);
+			console.error("Failed to toggle DND:", err);
+		}
+	}, [dndActive]);
+
+	const handleDndRightClick = useCallback((e: React.MouseEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		invoke("open_dnd_settings").catch(console.error);
+	}, []);
+
+	// System + Drift Theme Toggle
+	const toggleSystemTheme = useCallback(async (e: React.MouseEvent) => {
+		e.stopPropagation();
+		const nextDark = !systemIsDark;
+		setSystemIsDark(nextDark);
+
+		// 1. Toggle Windows system theme (registry + WM_SETTINGCHANGE broadcast)
+		invoke("set_system_theme_is_dark", { dark: nextDark }).catch(console.error);
+
+		// 2. Sync Drift app theme mode ("dark" / "light")
+		const driftMode = nextDark ? "dark" : "light";
+		localStorage.setItem("drift-theme-mode", driftMode);
+		invoke("save_setting", { key: "drift-theme-mode", value: driftMode }).catch(console.error);
+		initTheme();
+	}, [systemIsDark]);
+
 	const handleWifiRightClick = useCallback(
 		(e: React.MouseEvent) => {
 			e.preventDefault();
@@ -1742,8 +1509,8 @@ function App() {
 			e.stopPropagation();
 			const nextMode = dockMode === "fixed" ? "smart" : dockMode === "smart" ? "peek" : "fixed";
 			setDockMode(nextMode);
-			localStorage.setItem("bloom-dock-mode", nextMode);
-			invoke("save_setting", { key: "bloom-dock-mode", value: nextMode }).catch(console.error);
+			localStorage.setItem("drift-dock-mode", nextMode);
+			invoke("save_setting", { key: "drift-dock-mode", value: nextMode }).catch(console.error);
 			try {
 				await invoke("change_dock_mode", { mode: nextMode });
 			} catch (err) {
@@ -1758,8 +1525,8 @@ function App() {
 			e.stopPropagation();
 			const nextMode = notchMode === "fixed" ? "smart" : notchMode === "smart" ? "peek" : "fixed";
 			setNotchMode(nextMode);
-			localStorage.setItem("bloom-notch-mode", nextMode);
-			invoke("save_setting", { key: "bloom-notch-mode", value: nextMode }).catch(console.error);
+			localStorage.setItem("drift-notch-mode", nextMode);
+			invoke("save_setting", { key: "drift-notch-mode", value: nextMode }).catch(console.error);
 			try {
 				await invoke("change_notch_mode", { mode: nextMode });
 			} catch (err) {
@@ -1777,13 +1544,9 @@ function App() {
 
 	const toggleCalendarMode = (e: React.MouseEvent) => {
 		e.stopPropagation();
-		if (isTimerFinished) {
-			resetTimer();
-			return;
-		}
 		if (!settingsCalendarEnabled) return;
 
-		setBloomMode((prev) => {
+		setDriftMode((prev) => {
 			if (prev === "calendar") {
 				// Return to music mode if media is present and playing and music mode is enabled, otherwise status
 				return settingsMusicModeEnabled && mediaInfo.has_media && isPlaying ? "music" : "status";
@@ -1862,14 +1625,14 @@ function App() {
 	};
 
 	// Music mode shows any time we have media info (playing or paused) and music mode setting is enabled
-	const isMusicMode = mediaInfo.has_media && bloomMode === "music" && settingsMusicModeEnabled;
+	const isMusicMode = mediaInfo.has_media && driftMode === "music" && settingsMusicModeEnabled;
 
 	// Calculate width dynamically based on enabled features
 	const getDynamicWidth = () => {
-		if (bloomMode === "announcement" && announcement && !announcementDismissed) return 380;
-		if (isCalendarMode) return 480;
-		if (bloomMode === "command-center" && isHovered) return 350;
-		if (bloomMode === "status" && isHovered) {
+		if (driftMode === "announcement" && announcement && !announcementDismissed) return 380;
+		if (isCalendarMode) return 330;
+		if (driftMode === "command-center" && isHovered) return 350;
+		if (driftMode === "status" && isHovered) {
 			const totalWidgets = statusWidgets.left.length + statusWidgets.right.length;
 			return Math.min(200 + totalWidgets * 50, 380);
 		}
@@ -1895,16 +1658,20 @@ function App() {
 			return isImpacted ? 28.9 : 44.2;
 		}
 		// Announcement card: body is line-clamped, so a fixed size fits both cases.
-		if (bloomMode === "announcement" && announcement && !announcementDismissed) {
+		if (driftMode === "announcement" && announcement && !announcementDismissed) {
 			return announcement.url ? 168 : 148;
 		}
-		// Sized to the calendar's week-row count plus the timer's fixed content.
-		if (bloomMode === "calendar") return calendarMonthRows >= 6 ? 305 : 273;
-		if (bloomMode === "command-center") return isHovered ? 230 : 36;
-		if (bloomMode === "status") return 36;
+		// Sized dynamically to the active month's week rows (5 or 6) with comfortable padding
+		// 6-row months get 362px; 5-row months get 328px (prevents top clipping behind notch)
+		if (driftMode === "calendar") {
+			const activeRows = getMonthWeekRows(calendarDate);
+			return activeRows >= 6 ? 362 : 328;
+		}
+		if (driftMode === "command-center") return isHovered ? 230 : 36;
+		if (driftMode === "status") return 36;
 		if (isMusicMode && isHovered) {
 			const hasProgressBar = (mediaInfo.duration_ms ?? 0) > 0;
-			let h = mediaLayout === "compact" ? (hasProgressBar ? 132 : 116) : 120;
+			let h = mediaLayout === "compact" ? (hasProgressBar ? 156 : 140) : 146;
 			if (mediaLayout === "compact") {
 				if (compactVolumeExpanded) h += 36;
 			}
@@ -1913,45 +1680,25 @@ function App() {
 		return 36;
 	};
 
-	const isCalendarMode = bloomMode === "calendar";
-	// Arrows beside the time switch panels once the open notch has been clicked,
-	// for mice without a scroll wheel. Hover alone keeps the notch uncluttered.
+	const isCalendarMode = driftMode === "calendar";
+	// Arrows beside the time switch panels whenever the notch is hovered,
+	// allowing easy 1-click switching between panels for all mouse and trackpad users.
 	const showPanelArrows =
-		isHovered && notchClicked && bloomMode !== "announcement" && getCyclableModes().length > 1;
+		isHovered && driftMode !== "announcement" && getCyclableModes().length > 1;
 
 	// Close compact media player expansions when notch is unhovered or mode changes
 	useEffect(() => {
 		if (mediaLayout === "compact") {
 			setCompactVolumeExpanded(false);
 		}
-	}, [isHovered, mediaLayout, bloomMode]);
+	}, [isHovered, mediaLayout, driftMode]);
 
 	return (
 		<div className="screen" style={{ overflow: "hidden" }}>
-			{/* Screen Corners (Top) */}
-			<AnimatePresence>
-				{isVisible && settingsCornersEnabled && (
-					<>
-						<motion.div
-							className="screen-corner top-left"
-							initial={{ opacity: 0 }}
-							animate={{ opacity: 1, filter: "blur(0px)" }}
-							exit={{ opacity: 0, filter: "blur(10px)" }}
-						/>
-						<motion.div
-							className="screen-corner top-right"
-							initial={{ opacity: 0 }}
-							animate={{ opacity: 1, filter: "blur(0px)" }}
-							exit={{ opacity: 0, filter: "blur(10px)" }}
-						/>
-					</>
-				)}
-			</AnimatePresence>
-
 			<div style={{ zoom: scale, width: "100%", display: "flex", justifyContent: "center" }}>
 				<motion.div
-					ref={bloomRef}
-					className={`bloom ${isHovered ? "expanded" : ""} ${isImpacted ? "is-impacted" : ""}`}
+					ref={driftRef}
+					className={`drift ${isHovered ? "expanded" : ""} ${isImpacted ? "is-impacted" : ""} ${isCalendarMode ? "calendar-mode" : ""}`}
 					onMouseEnter={() => setIsNotchHovered(true)}
 					onMouseLeave={() => setIsNotchHovered(false)}
 					onWheel={handleWheel}
@@ -1990,26 +1737,24 @@ function App() {
 					onClick={(e) => {
 						e.stopPropagation();
 					}}
-					onClickCapture={() => setNotchClicked(true)}
 					onHoverStart={() => {
 						setIsHovered(true);
-						if (bloomMode !== "announcement") {
-							setBloomMode(mediaInfo.has_media && isPlaying ? "music" : "status");
+						if (driftMode !== "announcement") {
+							setDriftMode(mediaInfo.has_media && isPlaying ? "music" : "status");
 						}
 					}}
 					onHoverEnd={() => {
 						setIsHovered(false);
-						setNotchClicked(false);
 						const targetMode =
 							mediaInfo.has_media && isPlaying && settingsMusicCompactNotch ? "music" : "status";
-						if (bloomMode === "music") {
-							setBloomMode(targetMode);
+						if (driftMode === "music") {
+							setDriftMode(targetMode);
 						} else if (
-							bloomMode === "command-center" ||
-							bloomMode === "calendar" ||
-							bloomMode === "status"
+							driftMode === "command-center" ||
+							driftMode === "calendar" ||
+							driftMode === "status"
 						) {
-							setBloomMode(targetMode);
+							setDriftMode(targetMode);
 						}
 					}}
 					style={{ originY: 0 }}
@@ -2027,14 +1772,15 @@ function App() {
 				>
 					<AnimatePresence>
 						{isMusicMode &&
-							settingsAmbienceEnabled &&
+							settingsMediaGlowIntensity > 0 &&
 							albumArtUrl &&
 							isHovered &&
 							!isCalendarMode && (
 								<motion.div
 									className="notch-ambient-glow"
+									style={{ opacity: settingsMediaGlowIntensity }}
 									initial={{ opacity: 0 }}
-									animate={{ opacity: 1 }}
+									animate={{ opacity: settingsMediaGlowIntensity }}
 									exit={{ opacity: 0 }}
 									transition={{ duration: 0.15 }}
 								>
@@ -2056,7 +1802,7 @@ function App() {
 					<AnimatePresence mode="wait">
 						{isExpanded && (
 							<motion.div
-								key="bloom-content"
+								key="drift-content"
 								initial={{ opacity: 0 }}
 								animate={{ opacity: 1 }}
 								exit={{ opacity: 0 }}
@@ -2082,6 +1828,61 @@ function App() {
 											exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.1 } }}
 											transition={{ type: "spring", stiffness: 500, damping: 30 }}
 										>
+											{showPanelArrows && (
+												<div className="music-panel-nav-row">
+													<div className="time-center">
+														<AnimatePresence>
+															{showPanelArrows && (
+																<motion.button
+																	key="music-panel-prev"
+																	type="button"
+																	className="panel-arrow prev"
+																	aria-label="Previous panel"
+																	initial={{ opacity: 0, x: 4 }}
+																	animate={{ opacity: 1, x: 0 }}
+																	exit={{ opacity: 0, x: 4 }}
+																	transition={{ duration: 0.15 }}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		cycleDriftMode(-1);
+																	}}
+																	title="Previous panel"
+																>
+																	<ChevronLeft size={12} strokeWidth={2.5} />
+																</motion.button>
+															)}
+														</AnimatePresence>
+														<div
+															className="time-flip-container"
+															onClick={toggleCalendarMode}
+															title="Jump to Calendar"
+														>
+															<span className="time">{time}</span>
+														</div>
+														<AnimatePresence>
+															{showPanelArrows && (
+																<motion.button
+																	key="music-panel-next"
+																	type="button"
+																	className="panel-arrow next"
+																	aria-label="Next panel"
+																	initial={{ opacity: 0, x: -4 }}
+																	animate={{ opacity: 1, x: 0 }}
+																	exit={{ opacity: 0, x: -4 }}
+																	transition={{ duration: 0.15 }}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		cycleDriftMode(1);
+																	}}
+																	title="Next panel"
+																>
+																	<ChevronRight size={12} strokeWidth={2.5} />
+																</motion.button>
+															)}
+														</AnimatePresence>
+													</div>
+												</div>
+											)}
 											{mediaLayout === "compact" ? (
 												<CompactMediaPlayer
 													mediaInfo={mediaInfo}
@@ -2101,9 +1902,9 @@ function App() {
 													onAnimateNext={animateNext}
 													onLayoutChange={(layout) => {
 														setMediaLayout(layout);
-														localStorage.setItem("bloom-media-layout", layout);
+														localStorage.setItem("drift-media-layout", layout);
 														invoke("save_setting", {
-															key: "bloom-media-layout",
+															key: "drift-media-layout",
 															value: layout
 														}).catch(console.error);
 														window.dispatchEvent(
@@ -2123,9 +1924,9 @@ function App() {
 															onClick={(e) => {
 																e.stopPropagation();
 																setMediaLayout("compact");
-																localStorage.setItem("bloom-media-layout", "compact");
+																localStorage.setItem("drift-media-layout", "compact");
 																invoke("save_setting", {
-																	key: "bloom-media-layout",
+																	key: "drift-media-layout",
 																	value: "compact"
 																}).catch(console.error);
 																window.dispatchEvent(
@@ -2438,7 +2239,7 @@ function App() {
 																			transition={{ duration: 0.15 }}
 																			onClick={(e) => {
 																				e.stopPropagation();
-																				cycleBloomMode(-1);
+																				cycleDriftMode(-1);
 																			}}
 																		>
 																			<ChevronLeft size={12} strokeWidth={2.5} />
@@ -2446,38 +2247,7 @@ function App() {
 																	)}
 																</AnimatePresence>
 																<div className="time-flip-container" onClick={toggleCalendarMode}>
-																	<AnimatePresence initial={false}>
-																		{timerSeconds > 0 || isTimerFinished ? (
-																			<motion.span
-																				key="timer"
-																				className={`time compact-timer ${isTimerFinished ? "timer-finished" : ""}`}
-																				initial={{ rotateX: -90, opacity: 0 }}
-																				animate={{ rotateX: 0, opacity: 1 }}
-																				exit={{ rotateX: 90, opacity: 0 }}
-																				transition={{ type: "spring", stiffness: 600, damping: 30 }}
-																			>
-																				{isTimerFinished && (
-																					<BellRing
-																						size={13}
-																						strokeWidth={2.5}
-																						className="timer-bell"
-																					/>
-																				)}
-																				{formatTimerTime(timerSeconds)}
-																			</motion.span>
-																		) : (
-																			<motion.span
-																				key="clock"
-																				className="time"
-																				initial={{ rotateX: -90, opacity: 0 }}
-																				animate={{ rotateX: 0, opacity: 1 }}
-																				exit={{ rotateX: 90, opacity: 0 }}
-																				transition={{ type: "spring", stiffness: 600, damping: 30 }}
-																			>
-																				{time}
-																			</motion.span>
-																		)}
-																	</AnimatePresence>
+																	<span className="time">{time}</span>
 																</div>
 																<AnimatePresence>
 																	{showPanelArrows && (
@@ -2492,7 +2262,7 @@ function App() {
 																			transition={{ duration: 0.15 }}
 																			onClick={(e) => {
 																				e.stopPropagation();
-																				cycleBloomMode(1);
+																				cycleDriftMode(1);
 																			}}
 																		>
 																			<ChevronRight size={12} strokeWidth={2.5} />
@@ -2516,11 +2286,12 @@ function App() {
 																			exit={{ opacity: 0, y: -20, scale: 0.8, filter: "blur(8px)" }}
 																			transition={{ duration: 0.12 }}
 																		>
-																			{albumArtUrl && settingsCompactGlowEnabled && (
+																			{albumArtUrl && settingsMediaGlowIntensity > 0 && (
 																				<img
 																					src={albumArtUrl}
 																					alt=""
 																					className="album-art-glow-bg"
+																					style={{ opacity: 0.6 * settingsMediaGlowIntensity }}
 																					draggable={false}
 																				/>
 																			)}
@@ -2603,7 +2374,7 @@ function App() {
 
 								{/* Command Center Panel */}
 								<AnimatePresence>
-									{bloomMode === "command-center" && (
+									{driftMode === "command-center" && (
 										<motion.div
 											className="command-center-content-minimal"
 											onClick={(e) => e.stopPropagation()}
@@ -2707,15 +2478,23 @@ function App() {
 
 											{/* Circular Actions Row */}
 											<div className="cc-circular-actions-row">
+												{/* Focus / DND Button */}
 												<button
 													className={`cc-circular-btn ${dndActive ? "active" : ""}`}
-													onClick={(e) => {
-														e.stopPropagation();
-														setDndActive((prev) => !prev);
-													}}
-													title={`Focus / DND: ${dndActive ? "On" : "Off"}`}
+													onClick={toggleDnd}
+													onContextMenu={handleDndRightClick}
+													title={`Focus / DND: ${dndActive ? "On" : "Off"} (Left-click: toggle, Right-click: settings)`}
 												>
-													<MoonIcon />
+													<DndIcon active={dndActive} />
+												</button>
+
+												{/* Windows & Drift Theme Toggle Button */}
+												<button
+													className={`cc-circular-btn ${!systemIsDark ? "active" : ""}`}
+													onClick={toggleSystemTheme}
+													title={`Theme: ${systemIsDark ? "Dark" : "Light"} — Click to switch Windows & Drift theme`}
+												>
+													{systemIsDark ? <MoonIcon /> : <SunIcon />}
 												</button>
 												<button
 													className={`cc-circular-btn ${batterySaverEnabled ? "active" : ""}`}
@@ -2741,6 +2520,16 @@ function App() {
 													className="cc-circular-btn"
 													onClick={(e) => {
 														e.stopPropagation();
+														invoke("toggle_launcher");
+													}}
+													title="Spotlight Search (Alt+Space)"
+												>
+													<Search size={14} />
+												</button>
+												<button
+													className="cc-circular-btn"
+													onClick={(e) => {
+														e.stopPropagation();
 														invoke("open_notification_center");
 													}}
 													title="Notification Center"
@@ -2753,7 +2542,7 @@ function App() {
 														e.stopPropagation();
 														openSettingsWindow();
 													}}
-													title="Bloom Settings"
+													title="Drift Settings"
 												>
 													<SettingsIcon />
 												</button>
@@ -2761,9 +2550,9 @@ function App() {
 													className="cc-circular-btn"
 													onClick={(e) => {
 														e.stopPropagation();
-														invoke("restart_bloom");
+														invoke("restart_drift");
 													}}
-													title="Restart Bloom"
+													title="Restart Drift"
 												>
 													<ReloadIcon />
 												</button>
@@ -2831,7 +2620,7 @@ function App() {
 
 								{/* Announcement Card */}
 								<AnimatePresence>
-									{bloomMode === "announcement" && announcement && !announcementDismissed && (
+									{driftMode === "announcement" && announcement && !announcementDismissed && (
 										<motion.div
 											className={`announcement-content severity-${announcement.severity}`}
 											onClick={(e) => e.stopPropagation()}
@@ -2872,11 +2661,11 @@ function App() {
 									)}
 								</AnimatePresence>
 
-								{/* Calendar & Timer Split View */}
+								{/* Calendar View */}
 								<AnimatePresence>
 									{settingsCalendarEnabled && isCalendarMode && (
 										<motion.div
-											className="calendar-timer-content split-view"
+											className="calendar-view-content"
 											onClick={(e) =>
 												e.stopPropagation()
 											} /* Block mode switches when clicking inside */
@@ -2885,99 +2674,7 @@ function App() {
 											exit={{ opacity: 0, filter: "blur(4px)", transition: { duration: 0.1 } }}
 											transition={{ type: "spring", stiffness: 400, damping: 30 }}
 										>
-											<div className="calendar-column">
-												<Calendar />
-											</div>
-
-											<div className="timer-column">
-												<div className={`timer-section-new state-${timerState}`}>
-													<div className="timer-main">
-														<div className="timer-status">
-															{isEditingTimer
-																? "Set duration"
-																: isTimerFinished
-																	? "Time's up"
-																	: timerEndTime
-																		? `${timerState === "paused" ? "Paused · " : ""}ends ${timerEndTime}`
-																		: "Click to edit"}
-														</div>
-
-														<div className={`timer-clock-row ${isEditingTimer ? "editing" : ""}`}>
-															<div
-																className={`timer-clock ${isEditingTimer && !timerEditValid ? "invalid" : ""}`}
-																onClick={beginTimerEdit}
-																title={isTimerRunning ? undefined : "Click to set a duration"}
-															>
-																{minuteDigitItems.map(({ digit, key }) => (
-																	<RollDigit key={key} value={digit} compact={clockCompact} />
-																))}
-																<span className="timer-colon">:</span>
-																{secondDigitItems.map(({ digit, key }) => (
-																	<RollDigit key={key} value={digit} compact={clockCompact} />
-																))}
-															</div>
-															<span className="timer-edit-underline" aria-hidden="true" />
-															{isEditingTimer && (
-																<input
-																	ref={timerInputRef}
-																	className="timer-edit-input"
-																	type="text"
-																	inputMode="numeric"
-																	aria-label="Set timer duration"
-																	value={formatTimerDigits(timerEditDigits)}
-																	onChange={(e) =>
-																		setTimerEditDigits(
-																			e.target.value.replace(/\D/g, "").slice(0, 5)
-																		)
-																	}
-																	onKeyDown={(e) => {
-																		if (e.key === "Enter") commitTimerEdit(true);
-																	}}
-																	onBlur={() => commitTimerEdit(false)}
-																	onWheel={(e) => e.stopPropagation()}
-																/>
-															)}
-														</div>
-													</div>
-
-													<div className="timer-controls-row">
-														<span className="timer-controls-spacer" aria-hidden="true" />
-														<button
-															onClick={handlePrimaryTimerAction}
-															onMouseDown={(e) => e.preventDefault()}
-															className="timer-btn-play"
-															title={primaryTimerLabel}
-														>
-															{isTimerRunning ? (
-																<Pause size={14} strokeWidth={2} fill="currentColor" />
-															) : (
-																<Play size={14} strokeWidth={2} fill="currentColor" />
-															)}
-															<span>{primaryTimerLabel}</span>
-														</button>
-														<button
-															onClick={resetTimer}
-															className="timer-btn-reset"
-															disabled={timerSeconds === 0 && !isTimerFinished}
-															title="Reset"
-														>
-															<RotateCcw size={14} strokeWidth={2.5} />
-														</button>
-													</div>
-
-													<div className="timer-preset-group">
-														{[5, 15, 25, 50].map((mins) => (
-															<button
-																key={mins}
-																onClick={() => startTimer(mins * 60)}
-																className={`timer-preset-segment ${lastDurationSeconds === mins * 60 && !isTimerFinished ? "active" : ""}`}
-															>
-																{mins}m
-															</button>
-														))}
-													</div>
-												</div>
-											</div>
+											<Calendar viewDate={calendarDate} onDateChange={setCalendarDate} />
 										</motion.div>
 									)}
 								</AnimatePresence>
@@ -2990,52 +2687,153 @@ function App() {
 	);
 }
 
-function Calendar() {
-	const [date] = useState(new Date());
+interface CalendarProps {
+	viewDate?: Date;
+	onDateChange?: (date: Date) => void;
+}
+
+function Calendar({ viewDate: propViewDate, onDateChange }: CalendarProps) {
+	const [internalViewDate, setInternalViewDate] = useState(() => new Date());
+	const viewDate = propViewDate ?? internalViewDate;
+	const setViewDate = (updater: Date | ((prev: Date) => Date)) => {
+		const nextDate = typeof updater === "function" ? updater(viewDate) : updater;
+		setInternalViewDate(nextDate);
+		onDateChange?.(nextDate);
+	};
+
+	const todayDate = useMemo(() => new Date(), []);
+
+	const currentMonth = viewDate.getMonth();
+	const currentYear = viewDate.getFullYear();
+
+	const isViewingCurrentMonth =
+		todayDate.getMonth() === currentMonth && todayDate.getFullYear() === currentYear;
+
+	const fullMonthName = viewDate.toLocaleString("default", { month: "long" });
 
 	const daysInMonth = (year: number, month: number) => new Date(year, month + 1, 0).getDate();
 	const firstDayOfMonth = (year: number, month: number) => new Date(year, month, 1).getDay();
 
-	const currentMonth = date.getMonth();
-	const currentYear = date.getFullYear();
-	const monthName = date.toLocaleString("default", { month: "long" });
-
 	const totalDays = daysInMonth(currentYear, currentMonth);
 	const startDay = firstDayOfMonth(currentYear, currentMonth);
+
+	// Previous month days to fill padding
+	const prevMonthTotalDays = daysInMonth(currentYear, currentMonth - 1);
+
+	const handlePrevMonth = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+	};
+
+	const handleNextMonth = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+	};
+
+	const handleResetToday = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		setViewDate(new Date());
+	};
+
 	const days = [];
 
-	// Padding for start of month
-	for (let i = 0; i < startDay; i++) {
-		days.push(<div key={`empty-${i}`} className="calendar-day empty" />);
-	}
-
-	// Actual days
-	const today = new Date().getDate();
-	const isCurrentMonth =
-		new Date().getMonth() === currentMonth && new Date().getFullYear() === currentYear;
-
-	for (let i = 1; i <= totalDays; i++) {
+	// Leading days from previous month
+	for (let i = startDay - 1; i >= 0; i--) {
+		const dayNum = prevMonthTotalDays - i;
 		days.push(
-			<div key={i} className={`calendar-day ${isCurrentMonth && i === today ? "today" : ""}`}>
-				{i}
+			<div key={`prev-${dayNum}`} className="calendar-day other-month">
+				<span>{dayNum}</span>
 			</div>
 		);
 	}
 
+	// Current month actual days
+	const today = todayDate.getDate();
+	for (let i = 1; i <= totalDays; i++) {
+		const isToday = isViewingCurrentMonth && i === today;
+		days.push(
+			<div key={`curr-${i}`} className={`calendar-day ${isToday ? "today" : ""}`}>
+				<span className="day-number">{i}</span>
+				{isToday && <span className="today-dot" aria-hidden="true" />}
+			</div>
+		);
+	}
+
+	// Trailing days from next month to complete standard grid
+	const remainingCells = (7 - (days.length % 7)) % 7;
+	for (let i = 1; i <= remainingCells; i++) {
+		days.push(
+			<div key={`next-${i}`} className="calendar-day other-month">
+				<span>{i}</span>
+			</div>
+		);
+	}
+
+	const weekDayNames = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
 	return (
 		<div className="calendar-container">
-			<div className="calendar-header">
-				<span className="month-year">
-					{monthName} {currentYear}
-				</span>
-			</div>
-			<div className="calendar-grid">
-				{["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-					<div key={`${d}-${i}`} className="day-name">
-						{d}
+			<div className="calendar-glass-card">
+				{/* Header */}
+				<div className="calendar-header-pro">
+					<div className="calendar-title-group">
+						<span className="calendar-month-text">{fullMonthName}</span>
+						<span className="calendar-year-badge">{currentYear}</span>
 					</div>
-				))}
-				{days}
+
+					<div className="calendar-nav-actions">
+						{!isViewingCurrentMonth && (
+							<button
+								type="button"
+								className="calendar-today-btn"
+								onClick={handleResetToday}
+								title="Jump to Today"
+							>
+								Today
+							</button>
+						)}
+						<button
+							type="button"
+							className="calendar-nav-btn"
+							onClick={handlePrevMonth}
+							aria-label="Previous month"
+						>
+							<ChevronLeft size={13} strokeWidth={2.5} />
+						</button>
+						<button
+							type="button"
+							className="calendar-nav-btn"
+							onClick={handleNextMonth}
+							aria-label="Next month"
+						>
+							<ChevronRight size={13} strokeWidth={2.5} />
+						</button>
+					</div>
+				</div>
+
+				{/* Weekday headers */}
+				<div className="calendar-weekdays-row">
+					{weekDayNames.map((d) => (
+						<div key={d} className="calendar-weekday-cell">
+							{d}
+						</div>
+					))}
+				</div>
+
+				{/* Days grid */}
+				<div className="calendar-grid-pro">{days}</div>
+
+				{/* Today status footer banner */}
+				<div className="calendar-footer-strip">
+					<span className="calendar-footer-dot" />
+					<span className="calendar-footer-text">
+						{todayDate.toLocaleDateString(undefined, {
+							weekday: "short",
+							month: "short",
+							day: "numeric"
+						})}
+					</span>
+				</div>
 			</div>
 		</div>
 	);
@@ -3108,6 +2906,49 @@ function MoonIcon() {
 			strokeLinejoin="round"
 		>
 			<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+		</svg>
+	);
+}
+
+function SunIcon() {
+	return (
+		<svg
+			width="18"
+			height="18"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2.2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		>
+			<circle cx="12" cy="12" r="4" />
+			<path d="M12 2v2" />
+			<path d="M12 20v2" />
+			<path d="m4.93 4.93 1.41 1.41" />
+			<path d="m17.66 17.66 1.41 1.41" />
+			<path d="M2 12h2" />
+			<path d="M20 12h2" />
+			<path d="m6.34 17.66-1.41 1.41" />
+			<path d="m19.07 4.93-1.41 1.41" />
+		</svg>
+	);
+}
+
+function DndIcon({ active }: { active: boolean }) {
+	return (
+		<svg
+			width="18"
+			height="18"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2.2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+		>
+			<circle cx="12" cy="12" r="10" />
+			<line x1="8" y1="12" x2="16" y2="12" strokeWidth={active ? "3" : "2.2"} />
 		</svg>
 	);
 }

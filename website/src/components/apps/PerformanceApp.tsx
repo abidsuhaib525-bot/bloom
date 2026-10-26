@@ -104,9 +104,9 @@ export default function PerformanceMonitor() {
 	}, [cpu, ram]);
 
 	const processes = [
-		{ name: "bloom.exe", cpu: 1.2, ram: 4.1, color: "#34d399" },
-		{ name: "bloom-daemon", cpu: 0.3, ram: 1.8, color: "#60a5fa" },
-		{ name: "bloom-notch", cpu: 0.1, ram: 1.2, color: "#a78bfa" }
+		{ name: "drift.exe", cpu: 1.2, ram: 4.1, color: "#34d399" },
+		{ name: "drift-daemon", cpu: 0.3, ram: 1.8, color: "#60a5fa" },
+		{ name: "drift-notch", cpu: 0.1, ram: 1.2, color: "#a78bfa" }
 	];
 
 	return (

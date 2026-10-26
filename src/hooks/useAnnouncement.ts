@@ -10,10 +10,10 @@ export interface Announcement {
 	url?: string;
 }
 
-const ENDPOINT = "https://bloom.sehaz.space/announcements.json";
-const CACHE_KEY = "bloom-announcement-cache";
-const CACHE_AT_KEY = "bloom-announcement-cache-at";
-const DISMISSED_KEY = "bloom-announcement-dismissed";
+const ENDPOINT = "https://drift.abidsuhaib525-bot.com/announcements.json";
+const CACHE_KEY = "drift-announcement-cache";
+const CACHE_AT_KEY = "drift-announcement-cache-at";
+const DISMISSED_KEY = "drift-announcement-dismissed";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -64,10 +64,10 @@ function fetchAnnouncement(): Promise<Announcement | null> {
 }
 
 /**
- * Fetches the announcement published at `announcements.json` on the Bloom
+ * Fetches the announcement published at `announcements.json` on the Drift
  * website. Fails silently (offline / not deployed), retries on a later launch,
  * and keeps the last payload cached so the card survives restarts until
- * dismissed. Dismissal is stored as the `bloom-announcement-dismissed` setting
+ * dismissed. Dismissal is stored as the `drift-announcement-dismissed` setting
  * so every window hides the same announcement.
  */
 export function useAnnouncement() {
@@ -106,13 +106,13 @@ export function useAnnouncement() {
 
 	// Dismissal from any window (notch close button or settings banner).
 	useSettingsSync({
-		"bloom-announcement-dismissed": (value) => setDismissed(announcement?.id === value)
+		"drift-announcement-dismissed": (value) => setDismissed(announcement?.id === value)
 	});
 
 	const dismiss = useCallback(() => {
 		if (!announcement) return;
 		localStorage.setItem(DISMISSED_KEY, announcement.id);
-		invoke("save_setting", { key: "bloom-announcement-dismissed", value: announcement.id }).catch(
+		invoke("save_setting", { key: "drift-announcement-dismissed", value: announcement.id }).catch(
 			() => {}
 		);
 		setDismissed(true);

@@ -12,7 +12,7 @@ interface SettingsAppProps {
 
 export default function SettingsApp({ settings, updateSetting, wallpapersList }: SettingsAppProps) {
 	const accentColors = [
-		{ name: "Bloom Lavender", hex: "#e8c5e5" },
+		{ name: "Drift Lavender", hex: "#e8c5e5" },
 		{ name: "Cyan Tech", hex: "#00F0FF" },
 		{ name: "Sage Forest", hex: "#A4C3B2" },
 		{ name: "Vibrant Amber", hex: "#FFB800" },
@@ -108,7 +108,7 @@ export default function SettingsApp({ settings, updateSetting, wallpapersList }:
 						{/* Dock Visibility */}
 						<div className="flex items-center justify-between p-3">
 							<div className="flex flex-col">
-								<span className="font-medium text-white/90">Show Bloom Dock</span>
+								<span className="font-medium text-white/90">Show Drift Dock</span>
 								<span className="text-[11px] text-white/40">
 									Display the custom application bar
 								</span>
@@ -147,7 +147,7 @@ export default function SettingsApp({ settings, updateSetting, wallpapersList }:
 
 			{/* Bottom Footer Info */}
 			<div className="px-5 py-3 border-t border-white/[0.05] bg-white/[0.01] flex justify-between items-center text-[10px] text-white/30">
-				<span>Bloom Simulation Website v1.0.0</span>
+				<span>Drift Simulation Website v1.0.0</span>
 				<span>Made with React & Framer Motion</span>
 			</div>
 		</div>

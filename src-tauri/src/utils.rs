@@ -67,13 +67,13 @@ pub fn init_taskbar_marker(app: &tauri::AppHandle) {
     }
 }
 
-/// True if a previous Bloom session died without restoring the native taskbar.
+/// True if a previous Drift session died without restoring the native taskbar.
 pub fn taskbar_marker_exists() -> bool {
     TASKBAR_MARKER.get().is_some_and(|p| p.exists())
 }
 
 /// The marker records the user's own taskbar state (`ABM_GETSTATE`) from
-/// before Bloom forced auto-hide, so a crash can't lose it. Markers written by
+/// before Drift forced auto-hide, so a crash can't lose it. Markers written by
 /// older versions only contain "1" and carry no state.
 fn marker_contents(original_state: i32) -> String {
     format!("abstate={original_state}")
@@ -85,7 +85,7 @@ fn parse_marker_state(contents: &str) -> Option<i32> {
 
 /// Restores the native taskbar after a previous session died with it hidden.
 /// The state saved in the marker becomes the original to restore; without it,
-/// the current state would be captured instead, and that is Bloom's own
+/// the current state would be captured instead, and that is Drift's own
 /// auto-hide.
 pub fn restore_taskbar_after_crash() {
     let saved = TASKBAR_MARKER
@@ -115,10 +115,6 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
             return;
         }
 
-        let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
-        let secondary_tray_class =
-            windows::core::PCSTR(c"Shell_SecondaryTrayWnd".as_ptr() as *const u8);
-
         // Save original taskbar state before modifying
         if ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed) == -1 {
             let mut get_abd = APPBARDATA {
@@ -145,34 +141,39 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
         }
 
         let state_val = if visible {
-            let orig = ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed);
-            if orig != -1 {
-                orig as isize
+            if always_on_top {
+                2 // ABS_ALWAYSONTOP (Force visible)
             } else {
-                if always_on_top {
-                    2
-                } else {
-                    1
-                }
+                let orig = ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed);
+                if orig != -1 { orig as isize } else { 1 }
             }
         } else {
             1 // Force Auto-hide when hiding
         };
 
-        // 1. Set the taskbar state (Auto-hide or Always-on-top)
+        let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        let secondary_tray_class =
+            windows::core::PCSTR(c"Shell_SecondaryTrayWnd".as_ptr() as *const u8);
+
         let mut abd = APPBARDATA {
             cbSize: std::mem::size_of::<APPBARDATA>() as u32,
             lParam: windows::Win32::Foundation::LPARAM(state_val),
             ..Default::default()
         };
-        SHAppBarMessage(ABM_SETSTATE, &mut abd);
+
+        if !visible {
+            SHAppBarMessage(ABM_SETSTATE, &mut abd);
+        }
 
         // 2. Control visibility of the primary taskbar
         if let Ok(tray_hwnd) = FindWindowA(tray_class, windows::core::PCSTR::null()) {
+            use windows::Win32::Graphics::Gdi::{
+                RedrawWindow, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+            };
             use windows::Win32::UI::WindowsAndMessaging::{
                 GetWindowLongA, SetLayeredWindowAttributes, SetWindowLongA, SetWindowPos,
-                GWL_EXSTYLE, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
-                WS_EX_TRANSPARENT,
+                GWL_EXSTYLE, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSIZE,
+                SWP_NOZORDER, WS_EX_LAYERED, WS_EX_TRANSPARENT,
             };
             if visible {
                 // Revert any lingering WS_EX_LAYERED / WS_EX_TRANSPARENT left by
@@ -188,6 +189,7 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                         LWA_ALPHA,
                     );
                 }
+                let mut restored_pos = false;
                 if let Ok(guard) = ORIGINAL_TRAY_RECT.lock() {
                     if let Some(rect) = *guard {
                         let _ = SetWindowPos(
@@ -197,11 +199,42 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                             rect.top,
                             0,
                             0,
-                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                         );
+                        restored_pos = true;
                     }
                 }
+                if !restored_pos {
+                    // Fallback: If original rect was never saved or was off-screen (-10000),
+                    // move it back to primary monitor bottom so it's guaranteed visible.
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+                    };
+                    let screen_w = GetSystemMetrics(SM_CXSCREEN);
+                    let screen_h = GetSystemMetrics(SM_CYSCREEN);
+                    let _ = SetWindowPos(
+                        tray_hwnd,
+                        None,
+                        0,
+                        screen_h - 40,
+                        screen_w,
+                        40,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    );
+                }
+
                 let _ = ShowWindow(tray_hwnd, SW_SHOW);
+                
+                // Now that it's visible, restore the state
+                SHAppBarMessage(ABM_SETSTATE, &mut abd);
+
+                // Force Explorer to immediately repaint the taskbar
+                let _ = RedrawWindow(
+                    Some(tray_hwnd),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW,
+                );
             } else {
                 let has_rect = ORIGINAL_TRAY_RECT
                     .lock()
@@ -210,8 +243,10 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 if !has_rect {
                     let mut rect = windows::Win32::Foundation::RECT::default();
                     let _ = GetWindowRect(tray_hwnd, &mut rect);
-                    if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
-                        *guard = Some(rect);
+                    if rect.left >= -500 && rect.top >= -500 {
+                        if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+                            *guard = Some(rect);
+                        }
                     }
                 }
                 let _ = ShowWindow(tray_hwnd, SW_HIDE);
@@ -232,8 +267,11 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
         if let Ok(secondary_tray_hwnd) =
             FindWindowA(secondary_tray_class, windows::core::PCSTR::null())
         {
+            use windows::Win32::Graphics::Gdi::{
+                RedrawWindow, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+            };
             use windows::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
             };
             if visible {
                 if let Ok(guard) = ORIGINAL_SEC_TRAY_RECT.lock() {
@@ -245,11 +283,17 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                             rect.top,
                             0,
                             0,
-                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                         );
                     }
                 }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_SHOW);
+                let _ = RedrawWindow(
+                    Some(secondary_tray_hwnd),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW,
+                );
             } else {
                 let has_sec_rect = ORIGINAL_SEC_TRAY_RECT
                     .lock()
@@ -258,8 +302,10 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 if !has_sec_rect {
                     let mut rect = windows::Win32::Foundation::RECT::default();
                     let _ = GetWindowRect(secondary_tray_hwnd, &mut rect);
-                    if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECT.lock() {
-                        *guard = Some(rect);
+                    if rect.left >= -500 && rect.top >= -500 {
+                        if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECT.lock() {
+                            *guard = Some(rect);
+                        }
                     }
                 }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_HIDE);
@@ -731,8 +777,8 @@ pub fn replace_settings_cache(new_settings: std::collections::HashMap<String, se
     }
 }
 
-pub fn get_bloom_scale(_app: &tauri::AppHandle) -> f64 {
-    get_setting_str(_app, "bloom-scale")
+pub fn get_drift_scale(_app: &tauri::AppHandle) -> f64 {
+    get_setting_str(_app, "drift-scale")
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(1.0)
 }
@@ -947,8 +993,8 @@ mod tests {
 
         // Unknown variables stay verbatim
         assert_eq!(
-            expand_env_vars("%BLOOM_NOT_A_REAL_VAR%\\x"),
-            "%BLOOM_NOT_A_REAL_VAR%\\x"
+            expand_env_vars("%DRIFT_NOT_A_REAL_VAR%\\x"),
+            "%DRIFT_NOT_A_REAL_VAR%\\x"
         );
 
         // Unclosed percent is left alone
@@ -975,7 +1021,7 @@ mod tests {
         // Already-qualified paths and nonsense are not resolved
         assert_eq!(resolve_executable_path("C:\\Windows\\notepad.exe"), None);
         assert_eq!(
-            resolve_executable_path("bloom-definitely-not-installed"),
+            resolve_executable_path("drift-definitely-not-installed"),
             None
         );
         assert_eq!(resolve_executable_path(""), None);
@@ -989,13 +1035,13 @@ mod tests {
         // Mirrors a webview invoking save_setting before the setup hook has
         // initialized the cache.
         let mut settings = std::collections::HashMap::new();
-        settings.insert("bloom-test".to_string(), serde_json::json!("true"));
+        settings.insert("drift-test".to_string(), serde_json::json!("true"));
         replace_settings_cache(settings);
 
         let cache = SETTINGS_CACHE.get().expect("cache initialized");
         let guard = cache.lock().expect("cache lock");
         assert_eq!(
-            guard.get("bloom-test").and_then(|value| value.as_str()),
+            guard.get("drift-test").and_then(|value| value.as_str()),
             Some("true")
         );
     }

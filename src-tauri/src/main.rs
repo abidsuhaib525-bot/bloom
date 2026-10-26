@@ -1,6 +1,8 @@
+// Drift Desktop App
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod launcher;
 mod services;
 mod state;
 mod tray;
@@ -40,11 +42,11 @@ fn main() {
             CreateEventW, CreateMutexW, OpenEventW, SetEvent, SYNCHRONIZATION_ACCESS_RIGHTS,
         };
 
-        let mutex_name: Vec<u16> = "BloomSingleInstance"
+        let mutex_name: Vec<u16> = "DriftSingleInstance"
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let event_name: Vec<u16> = "BloomOpenSettings"
+        let event_name: Vec<u16> = "DriftOpenSettings"
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
@@ -81,6 +83,14 @@ fn main() {
         }
     }
 
+    // Optimize WebView2 memory footprint
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-features=Translate,OptimizationHints,MediaRouter --enable-features=msLowEndDeviceMode --js-flags=--max-old-space-size=128",
+        );
+    }
+
     setup_brightness_worker();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -96,11 +106,24 @@ fn main() {
             open_wifi_settings,
             open_sound_settings,
             open_notification_center,
+            open_dnd_settings,
+            get_system_theme_is_dark,
+            set_system_theme_is_dark,
+            get_dnd_state,
+            set_dnd_state,
             open_system_tray,
             set_ignore_cursor_events,
             set_window_height,
             resize_settings_window,
             hide_overlay,
+            launcher::toggle_launcher,
+            launcher::hide_launcher,
+            launcher::get_launcher_apps,
+            launcher::launch_app_and_hide,
+            launcher::search_user_files,
+            launcher::reveal_in_explorer,
+            launcher::execute_system_command,
+            launcher::read_image_data_url,
             set_splash_fullscreen,
             sync_overlay_position,
             media_play_pause,
@@ -137,8 +160,8 @@ fn main() {
             focus_window,
             focus_app_windows,
             close_window,
-            quit_bloom,
-            restart_bloom,
+            quit_drift,
+            restart_drift,
             get_volume,
             get_volume_state,
             get_brightness,
@@ -315,6 +338,7 @@ fn main() {
             setup_taskbar_hook();
             setup_audio_visualization(app.handle().clone());
             setup_settings_watcher(app.handle().clone());
+            setup_memory_trim_worker();
 
             // Listen for second-instance signal to open settings
             if let Some(&h_event) = SINGLE_INSTANCE_EVENT_HANDLE.get() {
@@ -344,22 +368,50 @@ fn main() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = win_clone.hide();
+                        crate::services::trim_process_working_set();
                     }
+                });
+            }
+
+            if let Some(launcher_win) = app.get_webview_window("launcher") {
+                let win_clone = launcher_win.clone();
+                launcher_win.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let now = crate::launcher::current_time_ms();
+                        crate::launcher::LAST_ACTION_MS.store(now, Ordering::SeqCst);
+                        crate::launcher::LAST_HIDE_MS.store(now, Ordering::Relaxed);
+                        crate::launcher::LAUNCHER_VISIBLE.store(false, Ordering::SeqCst);
+                        let _ = win_clone.hide();
+                        crate::services::trim_process_working_set();
+                    }
+                    tauri::WindowEvent::Focused(false) => {
+                        let now = crate::launcher::current_time_ms();
+                        let shown_at = crate::launcher::LAST_SHOWN_MS.load(Ordering::Relaxed);
+                        if now.saturating_sub(shown_at) > 350 && !crate::services::alt_key_physically_down() {
+                            crate::launcher::LAST_ACTION_MS.store(now, Ordering::SeqCst);
+                            crate::launcher::LAST_HIDE_MS.store(now, Ordering::Relaxed);
+                            crate::launcher::LAUNCHER_VISIBLE.store(false, Ordering::SeqCst);
+                            let _ = win_clone.hide();
+                            crate::services::trim_process_working_set();
+                        }
+                    }
+                    _ => {}
                 });
             }
             {
                 use tauri::menu::{Menu, MenuItem};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-                let quit_item = MenuItem::with_id(app, "quit", "Quit Bloom", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "Quit Drift", true, None::<&str>)?;
                 let restart_item =
-                    MenuItem::with_id(app, "restart", "Restart Bloom", true, None::<&str>)?;
+                    MenuItem::with_id(app, "restart", "Restart Drift", true, None::<&str>)?;
                 let settings_item =
                     MenuItem::with_id(app, "settings", "Open Settings", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&settings_item, &restart_item, &quit_item])?;
                 let ah = app.handle().clone();
                 TrayIconBuilder::new()
                     .icon(app.default_window_icon().unwrap().clone())
-                    .tooltip("Bloom")
+                    .tooltip("Drift")
                     .menu(&menu)
                     .on_menu_event(move |_, event| match event.id().as_ref() {
                         "quit" => {

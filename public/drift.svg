@@ -1,6 +1,11 @@
-
-    <svg width="48" viewBox="120 120 784 784">
-<path fill="white" opacity="1.000000" stroke="none" 
+    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="120 120 784 784">
+	<defs>
+		<linearGradient id="driftGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+			<stop offset="0%" style="stop-color:#4facfe;stop-opacity:1" />
+			<stop offset="100%" style="stop-color:#00f2fe;stop-opacity:1" />
+		</linearGradient>
+	</defs>
+<path fill="url(#driftGradient)" opacity="1.000000" stroke="none" 
 	d="
 M518.926270,162.709076 
 	C530.189697,164.778595 538.584839,170.454132 545.203430,179.268326 
@@ -60,7 +65,7 @@ M396.063568,505.450623
 	C393.549896,404.693573 370.485352,429.508850 370.501740,457.567200 
 	C370.513397,477.517731 379.093384,493.454529 396.063568,505.450623 
 z"/>
-<path fill="white" opacity="1.000000" stroke="none" 
+<path fill="url(#driftGradient)" opacity="1.000000" stroke="none" 
 	d="
 M572.150635,431.501648 
 	C586.706482,432.146179 597.808289,441.663239 599.258728,454.371277 
@@ -70,7 +75,7 @@ M572.150635,431.501648
 	C551.775757,438.158600 559.402100,432.444336 570.245361,431.600830 
 	C570.742371,431.562134 571.241089,431.544861 572.150635,431.501648 
 z"/>
-<path fill="white" opacity="1.000000" stroke="none" 
+<path fill="url(#driftGradient)" opacity="1.000000" stroke="none" 
 	d="
 M429.061554,469.623566 
 	C424.261749,456.982788 426.991150,445.001526 436.116028,437.555115 

@@ -1,12 +1,10 @@
 import {
 	PanelTop,
 	Calendar,
-	BellRing,
 	Music,
 	Minimize2,
 	LayoutList,
 	Sparkles,
-	Circle,
 	CloudSun,
 	Timer,
 	X
@@ -22,18 +20,14 @@ interface NotchTabProps {
 	handleNotchEdgeDelayChange: (val: number) => void;
 	calendarEnabled: boolean;
 	toggleCalendar: () => void;
-	timerSoundEnabled: boolean;
-	toggleTimerSound: () => void;
 	musicModeEnabled: boolean;
 	toggleMusicMode: () => void;
 	musicCompactNotch: boolean;
 	toggleMusicCompactNotch: () => void;
 	mediaLayout: "classic" | "compact";
 	toggleMediaLayout: (layout: "classic" | "compact") => void;
-	mediaAmbienceEnabled: boolean;
-	toggleAmbience: () => void;
-	mediaCompactGlowEnabled: boolean;
-	toggleCompactGlow: () => void;
+	mediaGlowIntensity: number;
+	handleMediaGlowIntensityChange: (val: number) => void;
 	weatherEnabled: boolean;
 	toggleWeather: () => void;
 	tempUnitFahrenheit: boolean;
@@ -61,18 +55,14 @@ export function NotchTab({
 	handleNotchEdgeDelayChange,
 	calendarEnabled,
 	toggleCalendar,
-	timerSoundEnabled,
-	toggleTimerSound,
 	musicModeEnabled,
 	toggleMusicMode,
 	musicCompactNotch,
 	toggleMusicCompactNotch,
 	mediaLayout,
 	toggleMediaLayout,
-	mediaAmbienceEnabled,
-	toggleAmbience,
-	mediaCompactGlowEnabled,
-	toggleCompactGlow,
+	mediaGlowIntensity,
+	handleMediaGlowIntensityChange,
 	weatherEnabled,
 	toggleWeather,
 	tempUnitFahrenheit,
@@ -125,25 +115,12 @@ export function NotchTab({
 					</SettingRow>
 				)}
 
-				<SettingRow icon={Calendar} label="Calendar & Timer" desc="Enable productivity split-view">
+				<SettingRow icon={Calendar} label="Calendar" desc="Show interactive month view">
 					<label className="toggle-switch">
 						<input type="checkbox" checked={calendarEnabled} onChange={toggleCalendar} />
 						<span className="slider"></span>
 					</label>
 				</SettingRow>
-
-				{calendarEnabled && (
-					<SettingRow
-						icon={BellRing}
-						label="Timer Sound"
-						desc="Play a chime when the timer finishes"
-					>
-						<label className="toggle-switch">
-							<input type="checkbox" checked={timerSoundEnabled} onChange={toggleTimerSound} />
-							<span className="slider"></span>
-						</label>
-					</SettingRow>
-				)}
 
 				<SettingRow icon={Music} label="Music Mode" desc="Interactive live music widget">
 					<label className="toggle-switch">
@@ -188,29 +165,19 @@ export function NotchTab({
 
 						<SettingRow
 							icon={Sparkles}
-							label="Ambient Glow"
-							desc="Colored glow behind expanded album art"
-						>
-							<label className="toggle-switch">
-								<input type="checkbox" checked={mediaAmbienceEnabled} onChange={toggleAmbience} />
-								<span className="slider"></span>
-							</label>
-						</SettingRow>
-
-						<SettingRow
-							icon={Circle}
-							label="Compact Glow"
-							desc="Glow around collapsed thumbnail"
+							label="Glow intensity"
+							desc={`Adjust album art glow brightness (${Math.round(mediaGlowIntensity * 100)}%)`}
 							divider={false}
 						>
-							<label className="toggle-switch">
-								<input
-									type="checkbox"
-									checked={mediaCompactGlowEnabled}
-									onChange={toggleCompactGlow}
-								/>
-								<span className="slider"></span>
-							</label>
+							<input
+								type="range"
+								min="0.0"
+								max="1.0"
+								step="0.05"
+								value={mediaGlowIntensity}
+								onChange={(e) => handleMediaGlowIntensityChange(parseFloat(e.target.value))}
+								className="settings-slider"
+							/>
 						</SettingRow>
 					</>
 				)}

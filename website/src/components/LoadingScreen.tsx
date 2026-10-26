@@ -27,8 +27,8 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
 					transition={{ duration: 0.5, ease: "easeInOut" }}
 				>
 					<motion.img
-						src="/bloom.png"
-						alt="Bloom"
+						src="/drift.png"
+						alt="Drift"
 						className="w-36 h-36 object-contain"
 						animate={{ rotate: 360 }}
 						transition={{

@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, memo } from "react";
-import { motion, AnimatePresence, Reorder } from "framer-motion";
+import { motion, AnimatePresence, Reorder, useMotionValue, useSpring, useTransform, type MotionValue } from "framer-motion";
+import { Settings as SettingsIcon, Search as SearchIcon } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./Dock.css";
@@ -81,12 +82,12 @@ const isIdentifier = (p: string) => !p.includes("/") && !p.includes("\\");
 // Resolve the configured start-button icon to a public asset, or to the data
 // URI of a user-uploaded icon (stored with a "custom:" prefix).
 function resolveStartIcon(startIcon: string): string {
-	if (startIcon === "bloom-colorful") return "/bloom-colorful.png";
-	if (startIcon === "bloom-golden") return "/bloom-golden.png";
-	if (startIcon === "bloom-biscuit") return "/bloom-biscuit.png";
+	if (startIcon === "drift-colorful") return "/drift-colorful.png";
+	if (startIcon === "drift-golden") return "/drift-golden.png";
+	if (startIcon === "drift-biscuit") return "/drift-biscuit.png";
 	if (startIcon === "windows") return "/windows.png";
 	if (startIcon.startsWith("custom:")) return startIcon.slice("custom:".length);
-	return "/bloom.png";
+	return "/drift.png";
 }
 
 // Stable module-level constants so object references never change between renders,
@@ -114,6 +115,63 @@ function WindowDots({ count, background }: { count: number; background?: boolean
 	);
 }
 
+// macOS dock magnification & bounce icon item component
+const DockIconItem = memo(function DockIconItem({
+	mouseX,
+	isDragging,
+	isBouncing,
+	isPressed,
+	className = "",
+	onClick,
+	onPointerDown,
+	onPointerUp,
+	onPointerCancel,
+	children
+}: {
+	mouseX: MotionValue<number>;
+	isDragging?: boolean;
+	isBouncing?: boolean;
+	isPressed?: boolean;
+	className?: string;
+	onClick?: (e: React.MouseEvent) => void;
+	onPointerDown?: () => void;
+	onPointerUp?: () => void;
+	onPointerCancel?: () => void;
+	children: React.ReactNode;
+}) {
+	const ref = useRef<HTMLDivElement>(null);
+
+	const distance = useTransform(mouseX, (val) => {
+		const bounds = ref.current?.getBoundingClientRect() ?? { x: 0, width: 0 };
+		return val - bounds.x - bounds.width / 2;
+	});
+
+	// Smooth continuous macOS magnification curve across nearby neighbor icons
+	const scaleSync = useTransform(distance, [-130, -65, 0, 65, 130], [1, 1.2, 1.44, 1.2, 1]);
+	const scale = useSpring(scaleSync, { mass: 0.1, stiffness: 220, damping: 14 });
+
+	const ySync = useTransform(distance, [-130, -65, 0, 65, 130], [0, -5, -12, -5, 0]);
+	const y = useSpring(ySync, { mass: 0.1, stiffness: 220, damping: 14 });
+
+	return (
+		<motion.div
+			ref={ref}
+			className={`dock-icon ${isBouncing ? "dock-icon-bounce" : ""} ${className}`}
+			style={{
+				scale: isDragging ? 1.05 : isPressed ? 0.94 : scale,
+				y: isBouncing ? undefined : isDragging ? -8 : y,
+				transformOrigin: "bottom center"
+			}}
+			onClick={onClick}
+			onPointerDown={onPointerDown}
+			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerCancel}
+		>
+			{children}
+		</motion.div>
+	);
+});
+
 const Dock = memo(function Dock() {
 	useEffect(() => {
 		return initTheme();
@@ -124,24 +182,24 @@ const Dock = memo(function Dock() {
 	const iconsRef = useRef<Record<string, string>>({});
 	const [, setIconsTick] = useState(0);
 	const [dockMode, setDockMode] = useState(() => {
-		const raw = localStorage.getItem("bloom-dock-mode") || "smart";
+		const raw = localStorage.getItem("drift-dock-mode") || "smart";
 		if (raw === "auto-hide") return "smart";
 		return raw;
 	});
 	const [dockPreviewEnabled, setDockPreviewEnabled] = useState(
-		() => localStorage.getItem("bloom-dock-preview-enabled") !== "false"
+		() => localStorage.getItem("drift-dock-preview-enabled") !== "false"
 	);
 	const [dockIconOnly, setDockIconOnly] = useState(
-		() => localStorage.getItem("bloom-dock-icon-only") === "true"
+		() => localStorage.getItem("drift-dock-icon-only") === "true"
 	);
 	const [dockSeparatorEnabled, setDockSeparatorEnabled] = useState(
-		() => localStorage.getItem("bloom-dock-separator-enabled") !== "false"
+		() => localStorage.getItem("drift-dock-separator-enabled") !== "false"
 	);
 	const [dockAdaptive, setDockAdaptive] = useState(
-		() => localStorage.getItem("bloom-dock-adaptive") === "true"
+		() => localStorage.getItem("drift-dock-adaptive") === "true"
 	);
 	const [startIcon, setStartIcon] = useState(
-		() => localStorage.getItem("bloom-start-icon") || "default"
+		() => localStorage.getItem("drift-start-icon") || "default"
 	);
 	const [isMaximized, setIsMaximized] = useState(false);
 	const [previewData, setPreviewData] = useState<{
@@ -164,6 +222,8 @@ const Dock = memo(function Dock() {
 	const [isDragging, setIsDragging] = useState(false);
 	const [hoveredApp, setHoveredApp] = useState<string | null>(null);
 	const [pressedApp, setPressedApp] = useState<string | null>(null);
+	const [bouncingApps, setBouncingApps] = useState<Set<string>>(() => new Set());
+	const mouseX = useMotionValue(Infinity);
 	const [isReady, setIsReady] = useState(false);
 	const [isImpacted, setIsImpacted] = useState(false);
 	const [isExpanded, setIsExpanded] = useState(false);
@@ -177,9 +237,12 @@ const Dock = memo(function Dock() {
 	const pinnedItemsRef = useRef<AppInfo[]>([]);
 	const handleAppClickRef = useRef<(app: AppInfo) => void>(() => {});
 	const [scale, setScale] = useState(() =>
-		parseFloat(localStorage.getItem("bloom-scale") || "1.0")
+		parseFloat(localStorage.getItem("drift-scale") || "1.0")
 	);
 	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+	const [launcherEnabled, setLauncherEnabled] = useState(
+		() => localStorage.getItem("drift-launcher-enabled") !== "false"
+	);
 
 	useEffect(() => {
 		const onResize = () => setViewportWidth(window.innerWidth);
@@ -224,10 +287,10 @@ const Dock = memo(function Dock() {
 	// standard maximized window is in the foreground, so the reserved strip no
 	// longer looks like a cut-out around the centered pill.
 	const isAdaptive =
-		dockAdaptive && dockMode === "fixed" && isMaximized && isExpanded && !isHidden && isVisible;
+		dockAdaptive && dockMode === "fixed" && isExpanded && !isHidden && isVisible && isMaximized;
 	// Nearly full width — 24px margin per side at the visual (scaled) size.
 	// Pre-transform: visual = width * scale, so width = (viewport - 48*scale) / scale.
-	const adaptiveWidth = (viewportWidth - 48 * scale) / scale;
+	const adaptiveWidth = viewportWidth / scale;
 
 	useEffect(() => {
 		let cleared = false;
@@ -311,28 +374,31 @@ const Dock = memo(function Dock() {
 				return fallback;
 			};
 
-			const dMode = getVal("bloom-dock-mode", "smart");
+			const dMode = getVal("drift-dock-mode", "smart");
 			if (dMode) {
 				const mapped = dMode === "auto-hide" ? "smart" : dMode;
 				setDockMode(mapped);
 			}
 
-			const preview = getVal("bloom-dock-preview-enabled", "true");
+			const preview = getVal("drift-dock-preview-enabled", "true");
 			setDockPreviewEnabled(preview === "true");
 
-			const iconOnly = getVal("bloom-dock-icon-only", "false");
+			const iconOnly = getVal("drift-dock-icon-only", "false");
 			setDockIconOnly(iconOnly === "true");
 
-			const separator = getVal("bloom-dock-separator-enabled", "true");
+			const separator = getVal("drift-dock-separator-enabled", "true");
 			setDockSeparatorEnabled(separator === "true");
 
-			const adaptive = getVal("bloom-dock-adaptive", "false");
+			const adaptive = getVal("drift-dock-adaptive", "false");
 			setDockAdaptive(adaptive === "true");
 
-			const startIconVal = getVal("bloom-start-icon", "default") || "default";
+			const startIconVal = getVal("drift-start-icon", "default") || "default";
 			setStartIcon(startIconVal);
 
-			const scaleVal = getVal("bloom-scale");
+			const launcher = getVal("drift-launcher-enabled", "true");
+			setLauncherEnabled(launcher !== "false");
+
+			const scaleVal = getVal("drift-scale");
 			if (scaleVal !== null) setScale(parseFloat(scaleVal));
 
 			const pinned = await invoke<AppInfo[]>("load_pinned_apps");
@@ -376,13 +442,14 @@ const Dock = memo(function Dock() {
 	}, []);
 
 	useSettingsSync({
-		"bloom-dock-mode": setDockMode,
-		"bloom-dock-preview-enabled": setDockPreviewEnabled,
-		"bloom-dock-icon-only": setDockIconOnly,
-		"bloom-dock-separator-enabled": setDockSeparatorEnabled,
-		"bloom-dock-adaptive": setDockAdaptive,
-		"bloom-start-icon": setStartIcon,
-		"bloom-scale": setScale
+		"drift-dock-mode": setDockMode,
+		"drift-dock-preview-enabled": setDockPreviewEnabled,
+		"drift-dock-icon-only": setDockIconOnly,
+		"drift-dock-separator-enabled": setDockSeparatorEnabled,
+		"drift-dock-adaptive": setDockAdaptive,
+		"drift-launcher-enabled": (val: string) => setLauncherEnabled(val !== "false"),
+		"drift-start-icon": setStartIcon,
+		"drift-scale": setScale
 	});
 
 	useEffect(() => {
@@ -548,8 +615,24 @@ const Dock = memo(function Dock() {
 		}
 	};
 
+	const triggerBounce = (key: string) => {
+		setBouncingApps((prev) => {
+			const next = new Set(prev);
+			next.add(key);
+			return next;
+		});
+		setTimeout(() => {
+			setBouncingApps((prev) => {
+				const next = new Set(prev);
+				next.delete(key);
+				return next;
+			});
+		}, 1000);
+	};
+
 	const handleAppClick = async (app: AppInfo) => {
 		try {
+			triggerBounce(itemKey(app));
 			if (app.path === "start") {
 				await invoke("open_app", { appName: "start" });
 			} else if (app.is_background && app.tray_ids?.length === 1) {
@@ -624,7 +707,7 @@ const Dock = memo(function Dock() {
 	const handleContextMenu = (e: React.MouseEvent, app: AppInfo | null) => {
 		e.stopPropagation();
 		e.preventDefault();
-		// Shift-right-click keeps Bloom pin/customization controls available.
+		// Shift-right-click keeps Drift pin/customization controls available.
 		if (app?.is_background && app.tray_ids?.length === 1 && !e.shiftKey) {
 			void openTrayMenu(app.tray_ids[0]);
 			return;
@@ -747,7 +830,7 @@ const Dock = memo(function Dock() {
 			}
 
 			// A pinned shell id and a visible window can have different paths
-			// (for example com.sehaz.bloom and bloom.exe). Match both visible
+			// (for example com.drift.desktop and drift.exe). Match both visible
 			// and background apps so the window cannot become a second dock item.
 			const equivalent = activeApps.find(
 				(app) => !matchedRunningKeys.has(itemKey(app)) && isSameApp(p, app)
@@ -917,13 +1000,6 @@ const Dock = memo(function Dock() {
 		};
 	}, [hoveredApp, isDragging, dockItems]);
 
-	const iconVariants = {
-		idle: { y: 0, scale: 1 },
-		hover: { y: -5, scale: 1.1 },
-		drag: { y: -10, scale: 1.1, opacity: 0.8 },
-		tap: { scale: 0.95 }
-	};
-
 	return (
 		<div className={`dock-container ${isDragging ? "dragging" : ""}`} onClick={closeMenu}>
 			<div
@@ -940,10 +1016,12 @@ const Dock = memo(function Dock() {
 					layout
 					className={`dock ${isExpanded && !isHidden ? "dock-expanded" : ""} ${isImpacted && !isExpanded && !isHidden ? "dock-impacted" : ""} ${dockIconOnly ? "dock-icon-only" : ""} ${isAdaptive ? "dock-adaptive" : ""}`}
 					onMouseEnter={() => setIsDockHovered(true)}
+					onMouseMove={(e) => mouseX.set(e.clientX)}
 					onMouseLeave={() => {
 						setIsDockHovered(false);
 						setHoveredApp(null);
 						setPressedApp(null);
+						mouseX.set(Infinity);
 					}}
 					initial={{
 						y: -800,
@@ -1012,16 +1090,11 @@ const Dock = memo(function Dock() {
 											(dockPreviewEnabled && hoveredApp === itemKey(startItem))) && (
 											<div className="tooltip">{startItem.name}</div>
 										)}
-										<motion.div
-											className="dock-icon"
-											variants={iconVariants}
-											animate={
-												pressedApp === itemKey(startItem)
-													? "tap"
-													: hoveredApp === itemKey(startItem)
-														? "hover"
-														: "idle"
-											}
+										<DockIconItem
+											mouseX={mouseX}
+											isDragging={isDragging}
+											isBouncing={bouncingApps.has(itemKey(startItem))}
+											isPressed={pressedApp === itemKey(startItem)}
 											onPointerDown={() => setPressedApp(itemKey(startItem))}
 											onPointerUp={() => setPressedApp(null)}
 											onPointerCancel={() => setPressedApp(null)}
@@ -1033,13 +1106,56 @@ const Dock = memo(function Dock() {
 											<img
 												src={resolveStartIcon(startIcon)}
 												alt="Start"
-												className="bloom-icon-img"
+												className="drift-icon-img"
 												style={
 													startIcon.startsWith("custom:") ? { borderRadius: "8px" } : undefined
 												}
 												draggable={false}
 											/>
-										</motion.div>
+										</DockIconItem>
+									</motion.div>
+								)}
+
+								{launcherEnabled && (
+									<motion.div
+										initial={{ opacity: 0, scale: 0 }}
+										animate={{ opacity: 1, scale: 1 }}
+										transition={{
+											opacity: { duration: 0.15, delay: 0.15 },
+											scale: { type: "spring", stiffness: 400, damping: 25, delay: 0.15 }
+										}}
+										className="dock-icon-wrapper"
+										onMouseEnter={() => setHoveredApp("drift-launcher-btn")}
+										onMouseLeave={() => setHoveredApp(null)}
+										onClick={(e) => {
+											e.stopPropagation();
+											invoke("toggle_launcher");
+										}}
+									>
+										{hoveredApp === "drift-launcher-btn" && (
+											<div className="tooltip">Spotlight (Alt+Space)</div>
+										)}
+										<DockIconItem
+											mouseX={mouseX}
+											isDragging={isDragging}
+											isPressed={pressedApp === "drift-launcher-btn"}
+											onPointerDown={() => setPressedApp("drift-launcher-btn")}
+											onPointerUp={() => setPressedApp(null)}
+											onPointerCancel={() => setPressedApp(null)}
+										>
+											<div
+												className="fallback-icon-svg"
+												style={{
+													display: "flex",
+													alignItems: "center",
+													justifyContent: "center",
+													width: "100%",
+													height: "100%"
+												}}
+											>
+												<SearchIcon size={22} color="white" />
+											</div>
+										</DockIconItem>
 									</motion.div>
 								)}
 
@@ -1145,19 +1261,11 @@ const Dock = memo(function Dock() {
 													(dockPreviewEnabled && hoveredApp === itemKey(app) && !previewData)) && (
 													<div className="tooltip">{app.name}</div>
 												)}
-												<motion.div
-													className="dock-icon"
-													variants={iconVariants}
-													animate={
-														pressedApp === itemKey(app)
-															? "tap"
-															: isDragging && !app.is_pinned
-																? "idle"
-																: hoveredApp === itemKey(app) && !isDragging
-																	? "hover"
-																	: "idle"
-													}
-													whileDrag="drag"
+												<DockIconItem
+													mouseX={mouseX}
+													isDragging={isDragging}
+													isBouncing={bouncingApps.has(itemKey(app))}
+													isPressed={pressedApp === itemKey(app)}
 													onPointerDown={() => setPressedApp(itemKey(app))}
 													onPointerUp={() => setPressedApp(null)}
 													onPointerCancel={() => setPressedApp(null)}
@@ -1180,23 +1288,29 @@ const Dock = memo(function Dock() {
 															(allowPathFallback && iconsRef.current[app.path]) ||
 															app.icon;
 
-														const isBloomOrSettings =
-															app.name.toLowerCase() === "settings" ||
-															app.name.toLowerCase() === "bloom" ||
-															app.path.toLowerCase().includes("bloom.exe");
+														const isDriftSettings = app.path === "drift-settings";
+														const isWindowsSettings =
+															app.path.toLowerCase().includes("immersivecontrolpanel") ||
+															(app.name.toLowerCase() === "settings" && !isDriftSettings);
+														
+														const isDriftOrSettings = isDriftSettings || isWindowsSettings || app.name.toLowerCase() === "drift" || app.path.toLowerCase().includes("drift.exe");
 
-														return icon ? (
+														return isDriftSettings && !customIcons[cacheKey] ? (
+															<div className="fallback-icon-svg" style={{ display: 'flex', alignItems: 'center', justifyItems: 'center', width: '100%', height: '100%', justifyContent: 'center' }}>
+																<SettingsIcon size={24} color="white" />
+															</div>
+														) : icon ? (
 															<img
 																src={icon}
 																alt={app.name}
-																className={isBloomOrSettings ? "bloom-icon-img" : ""}
+																className={isDriftOrSettings ? "drift-icon-img" : ""}
 																draggable={false}
 															/>
 														) : (
 															<div className="fallback-icon">{app.name[0]}</div>
 														);
 													})()}
-												</motion.div>
+												</DockIconItem>
 												{app.is_running && (
 													<WindowDots
 														count={app.all_hwnds?.length ?? 1}
@@ -1307,16 +1421,11 @@ const Dock = memo(function Dock() {
 											(dockPreviewEnabled && hoveredApp === itemKey(app) && !previewData)) && (
 											<div className="tooltip">{app.name}</div>
 										)}
-										<motion.div
-											className="dock-icon"
-											variants={iconVariants}
-											animate={
-												pressedApp === itemKey(app)
-													? "tap"
-													: hoveredApp === itemKey(app) && !isDragging
-														? "hover"
-														: "idle"
-											}
+										<DockIconItem
+											mouseX={mouseX}
+											isDragging={isDragging}
+											isBouncing={bouncingApps.has(itemKey(app))}
+											isPressed={pressedApp === itemKey(app)}
 											onPointerDown={() => setPressedApp(itemKey(app))}
 											onPointerUp={() => setPressedApp(null)}
 											onPointerCancel={() => setPressedApp(null)}
@@ -1338,22 +1447,29 @@ const Dock = memo(function Dock() {
 													iconsRef.current[cacheKey] ||
 													(allowPathFallback && iconsRef.current[app.path]) ||
 													app.icon;
-												const isBloomOrSettings =
-													app.name.toLowerCase() === "settings" ||
-													app.name.toLowerCase() === "bloom" ||
-													app.path.toLowerCase().includes("bloom.exe");
-												return icon ? (
+												const isDriftSettings = app.path === "drift-settings";
+												const isWindowsSettings =
+													app.path.toLowerCase().includes("immersivecontrolpanel") ||
+													(app.name.toLowerCase() === "settings" && !isDriftSettings);
+												
+												const isDriftOrSettings = isDriftSettings || isWindowsSettings || app.name.toLowerCase() === "drift" || app.path.toLowerCase().includes("drift.exe");
+												
+												return isDriftSettings && !customIcons[cacheKey] ? (
+													<div className="fallback-icon-svg" style={{ display: 'flex', alignItems: 'center', justifyItems: 'center', width: '100%', height: '100%', justifyContent: 'center' }}>
+														<SettingsIcon size={24} color="white" />
+													</div>
+												) : icon ? (
 													<img
 														src={icon}
 														alt={app.name}
-														className={isBloomOrSettings ? "bloom-icon-img" : ""}
+														className={isDriftOrSettings ? "drift-icon-img" : ""}
 														draggable={false}
 													/>
 												) : (
 													<div className="fallback-icon">{app.name[0]}</div>
 												);
 											})()}
-										</motion.div>
+										</DockIconItem>
 										{app.is_running && (
 											<WindowDots
 												count={app.all_hwnds?.length ?? 1}
@@ -1472,10 +1588,10 @@ const Dock = memo(function Dock() {
 							</div>
 							<div
 								className="menu-item has-submenu"
-								onMouseEnter={() => setActiveSubmenu("bloom")}
+								onMouseEnter={() => setActiveSubmenu("drift")}
 								onMouseLeave={() => setActiveSubmenu(null)}
 							>
-								Bloom Options
+								Drift Options
 								<span className="submenu-arrow">▶</span>
 								<div className="submenu">
 									<div
@@ -1487,8 +1603,8 @@ const Dock = memo(function Dock() {
 									>
 										Open Settings
 									</div>
-									<div className="menu-item" onClick={() => invoke("restart_bloom")}>
-										Restart Bloom
+									<div className="menu-item" onClick={() => invoke("restart_drift")}>
+										Restart Drift
 									</div>
 									<div
 										className="menu-item"
@@ -1500,8 +1616,8 @@ const Dock = memo(function Dock() {
 										Clear Icon Cache
 									</div>
 									<div className="menu-divider" />
-									<div className="menu-item quit" onClick={() => invoke("quit_bloom")}>
-										Quit Bloom
+									<div className="menu-item quit" onClick={() => invoke("quit_drift")}>
+										Quit Drift
 									</div>
 								</div>
 							</div>
@@ -1571,10 +1687,10 @@ const Dock = memo(function Dock() {
 							</div>
 							<div
 								className="menu-item has-submenu"
-								onMouseEnter={() => setActiveSubmenu("bloom")}
+								onMouseEnter={() => setActiveSubmenu("drift")}
 								onMouseLeave={() => setActiveSubmenu(null)}
 							>
-								Bloom Options
+								Drift Options
 								<span className="submenu-arrow">▶</span>
 								<div className="submenu">
 									<div
@@ -1586,8 +1702,8 @@ const Dock = memo(function Dock() {
 									>
 										Open Settings
 									</div>
-									<div className="menu-item" onClick={() => invoke("restart_bloom")}>
-										Restart Bloom
+									<div className="menu-item" onClick={() => invoke("restart_drift")}>
+										Restart Drift
 									</div>
 									<div
 										className="menu-item"
@@ -1599,8 +1715,8 @@ const Dock = memo(function Dock() {
 										Clear Icon Cache
 									</div>
 									<div className="menu-divider" />
-									<div className="menu-item quit" onClick={() => invoke("quit_bloom")}>
-										Quit Bloom
+									<div className="menu-item quit" onClick={() => invoke("quit_drift")}>
+										Quit Drift
 									</div>
 								</div>
 							</div>

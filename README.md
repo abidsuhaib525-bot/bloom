@@ -5,13 +5,16 @@
   width="72"
 />
 
-# Bloom
+# Drift
+
+> Originally based on Bloom by Sehajveer Singh (GPL-3.0). Modifications by abidsuhaib525-bot.
+
 
 <br/>
 
 <!-- HERO SHOWCASE — full-width cinematic shot or video -->
 <!-- ![Hero](your-hero-url) -->
-<img width="1920" height="1080" alt="Bloom Hero" src="https://github.com/user-attachments/assets/22041f25-a69e-457d-80d9-7dfbfbed2d29" />
+<img width="1920" height="1080" alt="Drift Hero" src="https://github.com/user-attachments/assets/22041f25-a69e-457d-80d9-7dfbfbed2d29" />
 
 <video width="1920" height="1080" src="https://github.com/user-attachments/assets/fa7f949b-d9c3-4a92-b00d-e1132c0f3ff1">
 
@@ -19,7 +22,7 @@
 
 ---
 
-Bloom makes your Windows desktop feel alive.
+Drift makes your Windows desktop feel alive.
 
 Every transition is a physics simulation.
 Every element responds to touch.
@@ -36,7 +39,7 @@ This wakes it up.
 <!-- ![Island Demo](your-island-gif-url) -->
 
 <p align="center">
-  <img width="430" height="70" alt="Bloom Island" src="https://github.com/user-attachments/assets/0d723558-9df4-4214-b20e-4a1f97eb1f22" />
+  <img width="430" height="70" alt="Drift Island" src="https://github.com/user-attachments/assets/0d723558-9df4-4214-b20e-4a1f97eb1f22" />
 </p>
 
 A notch at the top of your screen that adapts to what you're doing.
@@ -56,7 +59,7 @@ Watch it transform.
 
 **Status** — Battery, weather. Your desktop, summarized.
 
-**Calendar** — A month view with a Pomodoro timer. Focus without switching apps.
+**Calendar** — A clean month view in the notch. Check dates without switching apps.
 
 Each transition is spring-loaded.
 Width, height, border-radius, position — all animate independently.
@@ -70,12 +73,12 @@ It feels mechanical. In a good way.
 <!-- ![Dock Demo](your-dock-gif-url) -->
 
 <p align="center">
-  <img width="576" height="102" alt="Bloom Dock" src="https://github.com/user-attachments/assets/96229f0e-1246-4baf-b8ad-3e8f77142a12" />
+  <img width="576" height="102" alt="Drift Dock" src="https://github.com/user-attachments/assets/96229f0e-1246-4baf-b8ad-3e8f77142a12" />
 </p>
 
 A taskbar that actually moves.
 
-Bloom replaces your native Windows taskbar.
+Drift replaces your native Windows taskbar.
 It sits at the bottom of your screen, always there when you need it.
 
 Drag to reorder.
@@ -112,13 +115,13 @@ It's fast because it has to be.
 ---
 
 <!-- SHOWCASE: Full-width cinematic video or GIF montage -->
-<!-- ![Bloom Montage](your-montage-url) -->
+<!-- ![Drift Montage](your-montage-url) -->
 
 ---
 
 ## 🛡️ Microsoft Defender
 
-Some users may see a Microsoft Defender warning when installing Bloom.
+Some users may see a Microsoft Defender warning when installing Drift.
 
 The executable was submitted directly to Microsoft for analysis. Microsoft reviewed the file and confirmed that it **does not meet their criteria for malware or potentially unwanted applications**, and **the detection has been removed**.
 
@@ -143,13 +146,13 @@ MpCmdRun.exe -SignatureUpdate
 
 ## Get It Running
 
-**Download** the latest build from [Releases](https://github.com/SehajveerSingh2005/bloom/releases/latest).
+**Download** the latest build from [Releases](https://github.com/abidsuhaib525-bot/drift/releases/latest).
 
 Or build from source:
 
 ```bash
-git clone https://github.com/SehajveerSingh2005/bloom.git
-cd bloom
+git clone https://github.com/abidsuhaib525-bot/drift.git
+cd drift
 bun install
 bun run tauri dev
 ```
@@ -160,7 +163,7 @@ You'll need [Rust](https://rustup.rs/) and [Bun](https://bun.sh/). That's it.
 
 ## Contributing
 
-Bloom is open source.
+Drift is open source.
 Found a bug? Open an issue.
 Have an idea? Open a feature request first — we'll agree on the approach before you write code. See [CONTRIBUTING.md](CONTRIBUTING.md).
 Want to just say it's cool? A star goes a long way.

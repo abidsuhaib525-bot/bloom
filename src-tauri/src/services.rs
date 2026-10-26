@@ -7,15 +7,13 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use windows::core::BOOL;
-use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible, SetWindowsHookExW,
-    GWL_EXSTYLE, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_MOUSEMOVE, WS_EX_TOOLWINDOW,
+    GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
 };
 use wmi::{COMLibrary, WMIConnection};
 
@@ -26,6 +24,8 @@ static WIN_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 /// Digit (1-9) of the currently held Win+Number combo, 0 when none. Key
 /// auto-repeat re-fires the keydown; only the first press may toggle an app.
 static WIN_NUMBER_HELD: AtomicU8 = AtomicU8::new(0);
+static SPOTLIGHT_SPACE_DOWN: AtomicBool = AtomicBool::new(false);
+static SPOTLIGHT_LAST_SPACE_TIME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Virtual key Microsoft documents as "unassigned", used as the mask key.
 /// See `send_start_menu_mask`.
 const MASK_VK: u16 = 0xE8;
@@ -58,13 +58,13 @@ fn dock_win_number_enabled() -> bool {
     let Some(app) = KEYBOARD_HOOK_APP_HANDLE.get() else {
         return true;
     };
-    crate::utils::get_setting_str(app, "bloom-dock-win-number-enabled")
+    crate::utils::get_setting_str(app, "drift-dock-win-number-enabled")
         .map(|v| v != "false")
         .unwrap_or(true)
 }
 
-/// Whether one of Bloom's HUD overlays is enabled (`bloom-volume-overlay-enabled`,
-/// `bloom-brightness-overlay-enabled`). With an overlay off, the matching keys
+/// Whether one of Drift's HUD overlays is enabled (`drift-volume-overlay-enabled`,
+/// `drift-brightness-overlay-enabled`). With an overlay off, the matching keys
 /// and the native flyout are left to Windows instead of being taken over.
 fn overlay_enabled(app: &AppHandle, key: &str) -> bool {
     crate::utils::get_setting_str(app, key)
@@ -86,6 +86,16 @@ fn win_key_physically_down() -> bool {
     unsafe {
         (GetAsyncKeyState(VK_LWIN.0 as i32) as u16 & 0x8000) != 0
             || (GetAsyncKeyState(VK_RWIN.0 as i32) as u16 & 0x8000) != 0
+    }
+}
+
+/// Physical Alt state straight from the OS.
+pub fn alt_key_physically_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LMENU, VK_MENU, VK_RMENU};
+    unsafe {
+        (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0
+            || (GetAsyncKeyState(VK_LMENU.0 as i32) as u16 & 0x8000) != 0
+            || (GetAsyncKeyState(VK_RMENU.0 as i32) as u16 & 0x8000) != 0
     }
 }
 
@@ -158,9 +168,42 @@ unsafe extern "system" fn keyboard_hook_proc(
         let is_down = wparam.0 == WM_KEYDOWN as usize || wparam.0 == WM_SYSKEYDOWN as usize;
         let is_up = wparam.0 == WM_KEYUP as usize || wparam.0 == WM_SYSKEYUP as usize;
 
-        // Only physical presses drive the Win+Number replacement; injected
-        // events (our own Start taps and mask key) must not re-enter it.
+        // Only physical presses drive shortcuts; injected events must not re-enter.
         if (kb.flags.0 & LLKHF_INJECTED.0) == 0 {
+            // Check for Alt+Space global hotkey (VK_SPACE with Alt held) - matching V-Notch state tracker
+            if vk_code == windows::Win32::UI::Input::KeyboardAndMouse::VK_SPACE {
+                if SPOTLIGHT_SPACE_DOWN.load(Ordering::Relaxed) && is_up {
+                    SPOTLIGHT_SPACE_DOWN.store(false, Ordering::Relaxed);
+                    return windows::Win32::Foundation::LRESULT(1);
+                }
+
+                let is_alt = (kb.flags.0 & windows::Win32::UI::WindowsAndMessaging::LLKHF_ALTDOWN.0 != 0)
+                    || alt_key_physically_down();
+
+                if is_alt && is_down && hook_overlay_enabled("drift-launcher-enabled") {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let last_time = SPOTLIGHT_LAST_SPACE_TIME.load(Ordering::Relaxed);
+                    let already_down = SPOTLIGHT_SPACE_DOWN.load(Ordering::Relaxed);
+                    let elapsed = now.saturating_sub(last_time);
+                    let dispatch = !already_down || elapsed > 500;
+
+                    SPOTLIGHT_SPACE_DOWN.store(true, Ordering::Relaxed);
+                    SPOTLIGHT_LAST_SPACE_TIME.store(now, Ordering::Relaxed);
+
+                    if dispatch {
+                        if let Some(app) = KEYBOARD_HOOK_APP_HANDLE.get().cloned() {
+                            tauri::async_runtime::spawn(async move {
+                                crate::launcher::toggle_launcher(app);
+                            });
+                        }
+                    }
+                    return windows::Win32::Foundation::LRESULT(1);
+                }
+            }
+
             if vk_code == VK_LWIN || vk_code == VK_RWIN {
                 if is_down {
                     WIN_KEY_DOWN.store(true, Ordering::Relaxed);
@@ -200,7 +243,7 @@ unsafe extern "system" fn keyboard_hook_proc(
         }
 
         if (vk_code == VK_VOLUME_MUTE || vk_code == VK_VOLUME_UP || vk_code == VK_VOLUME_DOWN)
-            && hook_overlay_enabled("bloom-volume-overlay-enabled")
+            && hook_overlay_enabled("drift-volume-overlay-enabled")
         {
             if is_down {
                 handle_volume_key_event(vk_code);
@@ -208,7 +251,7 @@ unsafe extern "system" fn keyboard_hook_proc(
             return windows::Win32::Foundation::LRESULT(1);
         }
         if (vk_code.0 == 0x216 || vk_code.0 == 0x217)
-            && hook_overlay_enabled("bloom-brightness-overlay-enabled")
+            && hook_overlay_enabled("drift-brightness-overlay-enabled")
         {
             if is_down {
                 handle_brightness_key_event(vk_code);
@@ -989,7 +1032,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
             let mut last_volume: f32 = -1.0;
             let mut last_muted: bool = false;
 
-            // Only hide the native flyout when Bloom's matching overlay replaces it.
+            // Only hide the native flyout when Drift's matching overlay replaces it.
             let hide_osd = |overlay_key: &str| {
                 if !overlay_enabled(&handle_system, overlay_key) {
                     return;
@@ -1039,7 +1082,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                         (SystemCommand::VolumeMute, Some(aev)) => {
                             if let Ok(muted) = aev.GetMute() {
                                 let _ = aev.SetMute(!muted.as_bool(), std::ptr::null());
-                                hide_osd("bloom-volume-overlay-enabled");
+                                hide_osd("drift-volume-overlay-enabled");
                             }
                         }
                         (SystemCommand::VolumeUp, Some(aev)) => {
@@ -1053,7 +1096,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                 if muted.as_bool() {
                                     let _ = aev.SetMute(false, std::ptr::null());
                                 }
-                                hide_osd("bloom-volume-overlay-enabled");
+                                hide_osd("drift-volume-overlay-enabled");
                             }
                         }
                         (SystemCommand::VolumeDown, Some(aev)) => {
@@ -1062,7 +1105,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                     (vol - 0.05).max(0.0),
                                     std::ptr::null(),
                                 );
-                                hide_osd("bloom-volume-overlay-enabled");
+                                hide_osd("drift-volume-overlay-enabled");
                             }
                         }
                         (SystemCommand::SetVolume(volume), Some(aev)) => {
@@ -1073,7 +1116,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                             if volume > 0.0 {
                                 let _ = aev.SetMute(false, std::ptr::null());
                             }
-                            hide_osd("bloom-volume-overlay-enabled");
+                            hide_osd("drift-volume-overlay-enabled");
                         }
                         (
                             SystemCommand::VolumeMute
@@ -1113,13 +1156,6 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                         }
                         (SystemCommand::ToggleVisibility(visible), _) => {
                             let _ = handle_system.emit("visibility-change", visible);
-                            if let Some(w) = handle_system.get_webview_window("bottom-corners") {
-                                if visible {
-                                    let _ = w.show();
-                                } else {
-                                    let _ = w.hide();
-                                }
-                            }
                         }
                         (SystemCommand::BrightnessUp, _) => {
                             let new_val =
@@ -1135,7 +1171,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                             if let Some(tx) = BRIGHTNESS_SENDER.get() {
                                 let _ = tx.send(new_val);
                             }
-                            hide_osd("bloom-brightness-overlay-enabled");
+                            hide_osd("drift-brightness-overlay-enabled");
                         }
                         (SystemCommand::BrightnessDown, _) => {
                             let current = CURRENT_BRIGHTNESS.load(Ordering::Relaxed);
@@ -1151,7 +1187,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                             if let Some(tx) = BRIGHTNESS_SENDER.get() {
                                 let _ = tx.send(new_val);
                             }
-                            hide_osd("bloom-brightness-overlay-enabled");
+                            hide_osd("drift-brightness-overlay-enabled");
                         }
                     }
                 }
@@ -1171,7 +1207,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                     is_muted,
                                 },
                             );
-                            hide_osd("bloom-volume-overlay-enabled");
+                            hide_osd("drift-volume-overlay-enabled");
                         }
                     }
                 }
@@ -1435,7 +1471,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                 let mut hwnd = GetForegroundWindow();
 
                 // Find the first meaningful window for overlap detection.
-                // We skip Bloom windows, invisible windows, minimized windows, and 'cloaked' system ghosts.
+                // We skip Drift windows, invisible windows, minimized windows, and 'cloaked' system ghosts.
                 let mut check_count = 0;
                 while !hwnd.is_invalid() && check_count < 15 {
                     let mut process_id = 0u32;
@@ -1448,7 +1484,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                     );
                     let class_str = std::str::from_utf8(&class_name[..len as usize]).unwrap_or("");
 
-                    let is_bloom = process_id == my_process_id || class_str.contains("Bloom");
+                    let is_drift = process_id == my_process_id || class_str.contains("Drift");
                     let is_visible = IsWindowVisible(hwnd).as_bool();
                     let is_iconic = IsIconic(hwnd).as_bool();
 
@@ -1467,7 +1503,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                         && (rect.right - rect.left) > 0
                         && (rect.bottom - rect.top) > 0;
 
-                    if is_bloom || !is_visible || is_iconic || is_cloaked || !has_valid_rect {
+                    if is_drift || !is_visible || is_iconic || is_cloaked || !has_valid_rect {
                         hwnd = windows::Win32::UI::WindowsAndMessaging::GetWindow(
                             hwnd,
                             windows::Win32::UI::WindowsAndMessaging::GW_HWNDNEXT,
@@ -1866,7 +1902,7 @@ fn native_osd_windows() -> Vec<HWND> {
 /// Laptop brightness keys bypass input hooks (the firmware changes brightness
 /// and notifies the display driver directly), so unlike the volume keys they
 /// cannot be swallowed to keep Windows from drawing its own flyout. While
-/// Bloom's overlay replaces it, the flyout host is kept fully transparent and
+/// Drift's overlay replaces it, the flyout host is kept fully transparent and
 /// click-through instead; Explorer may still show it, but nothing is visible.
 pub fn set_native_osd_suppressed(suppress: bool) {
     use windows::Win32::Foundation::COLORREF;
@@ -1879,7 +1915,7 @@ pub fn set_native_osd_suppressed(suppress: bool) {
             let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
             let mut alpha = 255u8;
             // Explorer never makes this window layered itself, so a layered
-            // window at alpha 0 is Bloom's doing, including from a crashed run.
+            // window at alpha 0 is Drift's doing, including from a crashed run.
             let suppressed = (ex_style & WS_EX_LAYERED.0) != 0
                 && GetLayeredWindowAttributes(hwnd, None, Some(&mut alpha), None).is_ok()
                 && alpha == 0;
@@ -1903,7 +1939,7 @@ pub fn set_native_osd_suppressed(suppress: bool) {
 }
 
 /// The volume and brightness flyouts share one host window, so it is only
-/// suppressed while Bloom replaces both. With either overlay turned off, the
+/// suppressed while Drift replaces both. With either overlay turned off, the
 /// user asked for the native flyout and it must stay visible.
 fn sync_native_osd(app_handle: &AppHandle) {
     let enabled = |key: &str| {
@@ -1912,7 +1948,7 @@ fn sync_native_osd(app_handle: &AppHandle) {
             .unwrap_or(true)
     };
     set_native_osd_suppressed(
-        enabled("bloom-brightness-overlay-enabled") && enabled("bloom-volume-overlay-enabled"),
+        enabled("drift-brightness-overlay-enabled") && enabled("drift-volume-overlay-enabled"),
     );
 }
 
@@ -2079,16 +2115,11 @@ static MH_LAST_DOCK_IGNORE: AtomicI32 = AtomicI32::new(-1);
 static MH_LAST_OV_IGNORE: AtomicI32 = AtomicI32::new(-1);
 static MH_LAST_EDGE_HOVER: AtomicI32 = AtomicI32::new(-1);
 static MH_LAST_TOP_EDGE_HOVER: AtomicI32 = AtomicI32::new(-1);
-static MH_LAST_LEFT_EDGE_HOVER: AtomicI32 = AtomicI32::new(-1);
-static MH_LAST_RIGHT_EDGE_HOVER: AtomicI32 = AtomicI32::new(-1);
 static MH_DOCK_EXPIRY_MS: AtomicI64 = AtomicI64::new(0);
 static MH_TOPBAR_EXPIRY_MS: AtomicI64 = AtomicI64::new(0);
-static MH_LEFT_EXPIRY_MS: AtomicI64 = AtomicI64::new(0);
-static MH_RIGHT_EXPIRY_MS: AtomicI64 = AtomicI64::new(0);
 static MH_LAST_MONITOR_UPDATE_MS: AtomicI64 = AtomicI64::new(0);
 static MH_CACHED_MON_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 static MH_CACHED_MON_SIZE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
-static MH_LAST_PROCESS_MS: AtomicI64 = AtomicI64::new(0);
 static CAPTURE_UI_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CAPTURE_RECHECK: AtomicBool = AtomicBool::new(true);
 static CAPTURE_LAST_SCAN_MS: AtomicI64 = AtomicI64::new(0);
@@ -2098,12 +2129,9 @@ static CAPTURE_LAST_SCAN_MS: AtomicI64 = AtomicI64::new(0);
 /// or claims cursor input — after the cursor has rested in the band for the
 /// configured delay. A pass-through to a maximized window's tab/title-bar
 /// controls never arms it. The delay is user-tunable via
-/// `bloom-notch-edge-delay` (ms); `0` restores the old instant behavior.
+/// `drift-notch-edge-delay` (ms); `0` restores the old instant behavior.
 const TOP_EDGE_BAND_PX: f64 = 8.0;
 const TOP_EDGE_DWELL_MS: i64 = 200;
-/// The mouse hook only fires on WM_MOUSEMOVE, so a pending dwell is completed
-/// by a watchdog that re-checks at this cadence.
-const TOP_EDGE_POLL_MS: u64 = 40;
 static MH_TOP_EDGE_ENTER_MS: AtomicI64 = AtomicI64::new(0);
 static MH_TOP_EDGE_ARMED: AtomicBool = AtomicBool::new(false);
 
@@ -2125,41 +2153,7 @@ fn volume_mixer_physical_rect_for(app: &AppHandle) -> Option<(i32, i32, i32, i32
     ))
 }
 
-/// The mouse hook only runs on mouse movement, so a cursor that stops just
-/// outside the mixer would leave it open indefinitely. This watchdog re-checks
-/// the position and closes the card as soon as the cursor is off it.
-fn setup_volume_mixer_watchdog(app_handle: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(200));
-        if SHUTTING_DOWN.load(Ordering::Relaxed) {
-            continue;
-        }
-        let Some((rx, ry, rw, rh)) = volume_mixer_physical_rect_for(&app_handle) else {
-            continue;
-        };
-        let mut pt = windows::Win32::Foundation::POINT::default();
-        if unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) }.is_err() {
-            continue;
-        }
-        let inside = pt.x >= rx && pt.x <= rx + rw && pt.y >= ry && pt.y <= ry + rh;
-        if inside {
-            continue;
-        }
-        let at_left_edge = app_handle
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .is_some_and(|m| {
-                let pos = m.position();
-                let size = m.size();
-                pt.x <= pos.x + 8 && pt.y >= pos.y && pt.y <= pos.y + size.height as i32
-            });
-        if !at_left_edge && MH_LAST_LEFT_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
-            MH_LEFT_EXPIRY_MS.store(0, Ordering::Relaxed);
-            let _ = app_handle.emit("volume-edge-hover", false);
-        }
-    });
-}
+
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -2169,7 +2163,7 @@ fn now_ms() -> i64 {
 }
 
 /// True while a screen-capture UI (Windows Snipping Tool) has a visible window.
-/// Bloom's notch sits exactly where that toolbar lives, so it must get out of
+/// Drift's notch sits exactly where that toolbar lives, so it must get out of
 /// the way even if the capture window isn't recognised as fullscreen.
 unsafe extern "system" fn capture_ui_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     use windows::Win32::UI::WindowsAndMessaging::IsIconic;
@@ -2260,7 +2254,7 @@ fn apply_capture_ui_state(app: &AppHandle, active: bool) {
     MH_LAST_MAIN_IGNORE.store(-1, Ordering::Relaxed);
     MH_LAST_DOCK_IGNORE.store(-1, Ordering::Relaxed);
     MH_LAST_OV_IGNORE.store(-1, Ordering::Relaxed);
-    // Cancel any pending top-edge dwell so it cannot arm while Bloom is
+    // Cancel any pending top-edge dwell so it cannot arm while Drift is
     // click-through for the capture tool.
     MH_TOP_EDGE_ENTER_MS.store(0, Ordering::Relaxed);
     MH_TOP_EDGE_ARMED.store(false, Ordering::Relaxed);
@@ -2268,18 +2262,37 @@ fn apply_capture_ui_state(app: &AppHandle, active: bool) {
 
 pub fn setup_mouse_hook(app_handle: AppHandle) {
     let _ = MOUSE_HOOK_APP_HANDLE.set(app_handle.clone());
-    setup_volume_mixer_watchdog(app_handle.clone());
-    setup_top_edge_watchdog(app_handle);
-    unsafe {
-        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0)
-            .expect("Failed to install mouse hook");
-    }
+    std::thread::Builder::new()
+        .name("drift-cursor-monitor".to_string())
+        .spawn(move || {
+            use windows::Win32::Foundation::POINT;
+            use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+            loop {
+                // Smooth, non-blocking 60fps cursor polling (16ms)
+                // Completely decoupled from Windows input thread - 0 cursor freeze on launch or slider moves!
+                std::thread::sleep(Duration::from_millis(16));
+
+                if SHUTTING_DOWN.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let mut pt = POINT::default();
+                if unsafe { GetCursorPos(&mut pt) }.is_err() {
+                    continue;
+                }
+
+                let now = now_ms();
+                process_cursor_interaction(&app_handle, pt, now);
+            }
+        })
+        .expect("Failed to start cursor monitor thread");
 }
 
 /// Top-edge hover-intent delay in milliseconds. `0` disables the gate so the
 /// notch reveals the moment the band is touched (the pre-fix behavior).
 fn top_edge_dwell_ms(app_handle: &AppHandle) -> i64 {
-    crate::utils::get_setting_str(app_handle, "bloom-notch-edge-delay")
+    crate::utils::get_setting_str(app_handle, "drift-notch-edge-delay")
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(TOP_EDGE_DWELL_MS)
         .clamp(0, 2000)
@@ -2353,7 +2366,7 @@ fn update_main_interaction(
     fg_fs: bool,
 ) {
     if fg_fs {
-        // Fullscreen foreground app or capture overlay: Bloom steps aside and
+        // Fullscreen foreground app or capture overlay: Drift steps aside and
         // any pending top-edge dwell is dropped.
         MH_TOP_EDGE_ENTER_MS.store(0, Ordering::Relaxed);
         MH_TOP_EDGE_ARMED.store(false, Ordering::Relaxed);
@@ -2386,7 +2399,7 @@ fn update_main_interaction(
     // about showing the notch — the hit-testing continuity below is separate
     // and must stay immediate.
     let edge_armed = if notch_mode_reserves_work_area(
-        get_setting_str(app_handle, "bloom-notch-mode").as_deref(),
+        get_setting_str(app_handle, "drift-notch-mode").as_deref(),
     ) {
         MH_TOP_EDGE_ENTER_MS.store(0, Ordering::Relaxed);
         MH_TOP_EDGE_ARMED.store(false, Ordering::Relaxed);
@@ -2469,383 +2482,273 @@ fn update_main_interaction(
     }
 }
 
-/// Completes a pending top-edge dwell while the cursor is stationary. The mouse
-/// hook only fires on movement, so without this an intentional "rest on the top
-/// edge" gesture would never arm.
-fn setup_top_edge_watchdog(app_handle: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(TOP_EDGE_POLL_MS));
-        if CAPTURE_UI_ACTIVE.load(Ordering::Relaxed) || SHUTTING_DOWN.load(Ordering::Relaxed) {
-            continue;
-        }
-        if MH_TOP_EDGE_ENTER_MS.load(Ordering::Relaxed) == 0
-            || MH_TOP_EDGE_ARMED.load(Ordering::Relaxed)
-        {
-            continue;
-        }
-        let mut pt = windows::Win32::Foundation::POINT::default();
-        if unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) }.is_err() {
-            continue;
-        }
-        let fg_fs = CURRENT_FOREGROUND_FULLSCREEN.load(Ordering::Relaxed);
-        update_main_interaction(&app_handle, pt, now_ms(), fg_fs);
-    });
-}
+fn process_cursor_interaction(
+    app_handle: &AppHandle,
+    cursor: windows::Win32::Foundation::POINT,
+    now: i64,
+) {
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        return;
+    }
 
-unsafe extern "system" fn mouse_hook_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    if code >= 0 && wparam.0 == WM_MOUSEMOVE as usize && !SHUTTING_DOWN.load(Ordering::Relaxed) {
-        // Throttle to ~30fps (32ms) to match old polling cadence.
-        // Without this, state checks and set_ignore_cursor_events fire on
-        // every pixel of cursor movement, causing notch flicker at edges.
-        let now = now_ms();
-        let last = MH_LAST_PROCESS_MS.load(Ordering::Relaxed);
-        if now - last < 32 {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-        MH_LAST_PROCESS_MS.store(now, Ordering::Relaxed);
-
-        if let Some(app_handle) = MOUSE_HOOK_APP_HANDLE.get() {
-            let pt = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-            let cursor = pt.pt;
-
-            // While a capture UI (Snipping Tool) is up, Bloom is fully
-            // click-through and skipped entirely so the tool owns the screen.
-            if CAPTURE_UI_ACTIVE.load(Ordering::Relaxed) {
-                if MH_LAST_MAIN_IGNORE.load(Ordering::Relaxed) != 1 {
-                    if let Some(w) = app_handle.get_webview_window("main") {
-                        let _ = w.set_ignore_cursor_events(true);
-                    }
-                    MH_LAST_MAIN_IGNORE.store(1, Ordering::Relaxed);
-                }
-                if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) != 1 {
-                    if let Some(w) = app_handle.get_webview_window("dock") {
-                        let _ = w.set_ignore_cursor_events(true);
-                    }
-                    MH_LAST_DOCK_IGNORE.store(1, Ordering::Relaxed);
-                }
-                if MH_LAST_OV_IGNORE.load(Ordering::Relaxed) != 1 {
-                    if let Some(w) = app_handle.get_webview_window("overlay") {
-                        let _ = w.set_ignore_cursor_events(true);
-                    }
-                    MH_LAST_OV_IGNORE.store(1, Ordering::Relaxed);
-                }
-                if MH_LAST_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
-                    let _ = app_handle.emit("dock-edge-hover", false);
-                }
-                if MH_LAST_TOP_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
-                    let _ = app_handle.emit("notch-edge-hover", false);
-                }
-                return CallNextHookEx(None, code, wparam, lparam);
+    // While a capture UI (Snipping Tool) is up, Drift is fully
+    // click-through and skipped entirely so the tool owns the screen.
+    if CAPTURE_UI_ACTIVE.load(Ordering::Relaxed) {
+        if MH_LAST_MAIN_IGNORE.load(Ordering::Relaxed) != 1 {
+            if let Some(w) = app_handle.get_webview_window("main") {
+                let _ = w.set_ignore_cursor_events(true);
             }
-
-            // Refresh cached monitor info every 1s
-            if now - MH_LAST_MONITOR_UPDATE_MS.load(Ordering::Relaxed) > 1000 {
-                if let Ok(Some(monitor)) = app_handle.primary_monitor() {
-                    let pos = *monitor.position();
-                    let size = *monitor.size();
-                    *MH_CACHED_MON_POS.lock().unwrap() = Some((pos.x, pos.y));
-                    *MH_CACHED_MON_SIZE.lock().unwrap() = Some((size.width, size.height));
-                    MH_LAST_MONITOR_UPDATE_MS.store(now, Ordering::Relaxed);
-                }
+            MH_LAST_MAIN_IGNORE.store(1, Ordering::Relaxed);
+        }
+        if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) != 1 {
+            if let Some(w) = app_handle.get_webview_window("dock") {
+                let _ = w.set_ignore_cursor_events(true);
             }
+            MH_LAST_DOCK_IGNORE.store(1, Ordering::Relaxed);
+        }
+        if MH_LAST_OV_IGNORE.load(Ordering::Relaxed) != 1 {
+            if let Some(w) = app_handle.get_webview_window("overlay") {
+                let _ = w.set_ignore_cursor_events(true);
+            }
+            MH_LAST_OV_IGNORE.store(1, Ordering::Relaxed);
+        }
+        if MH_LAST_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
+            let _ = app_handle.emit("dock-edge-hover", false);
+        }
+        if MH_LAST_TOP_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
+            let _ = app_handle.emit("notch-edge-hover", false);
+        }
+        return;
+    }
 
-            let cached_pos = MH_CACHED_MON_POS.lock().unwrap().unwrap_or((0, 0));
-            let cached_size = MH_CACHED_MON_SIZE.lock().unwrap().unwrap_or((1920, 1080));
-            let mon_x = cached_pos.0;
-            let mon_y = cached_pos.1;
-            let mon_w = cached_size.0 as i32;
-            let mon_h = cached_size.1 as i32;
+    // Refresh cached monitor info every 1s
+    if now - MH_LAST_MONITOR_UPDATE_MS.load(Ordering::Relaxed) > 1000 {
+        if let Ok(Some(monitor)) = app_handle.primary_monitor() {
+            let pos = *monitor.position();
+            let size = *monitor.size();
+            if let Ok(mut p_guard) = MH_CACHED_MON_POS.lock() {
+                *p_guard = Some((pos.x, pos.y));
+            }
+            if let Ok(mut s_guard) = MH_CACHED_MON_SIZE.lock() {
+                *s_guard = Some((size.width, size.height));
+            }
+            MH_LAST_MONITOR_UPDATE_MS.store(now, Ordering::Relaxed);
+        }
+    }
 
-            let fg_fs = CURRENT_FOREGROUND_FULLSCREEN.load(Ordering::Relaxed);
+    let cached_pos = MH_CACHED_MON_POS.lock().ok().and_then(|g| *g).unwrap_or((0, 0));
+    let cached_size = MH_CACHED_MON_SIZE.lock().ok().and_then(|g| *g).unwrap_or((1920, 1080));
+    let mon_x = cached_pos.0;
+    let mon_y = cached_pos.1;
+    let mon_w = cached_size.0 as i32;
+    let mon_h = cached_size.1 as i32;
 
-            // --- Dock Interaction ---
-            if fg_fs {
-                // Fullscreen foreground app or capture overlay: the dock must not
-                // intercept input (e.g. a Snipping Tool selection ending at the
-                // bottom edge), so keep it click-through.
-                if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) != 1 {
-                    if let Some(dock_win) = app_handle.get_webview_window("dock") {
-                        let _ = dock_win.set_ignore_cursor_events(true);
-                    }
-                    MH_LAST_DOCK_IGNORE.store(1, Ordering::Relaxed);
-                }
-                if MH_LAST_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
-                    let _ = app_handle.emit("dock-edge-hover", false);
-                }
-            } else if let Some(dock_win) = app_handle.get_webview_window("dock") {
-                if dock_win.is_visible().unwrap_or(false) {
-                    let mut is_click_interactive = false;
-                    let mut is_hovered = false;
-                    let mut dock_span: Option<(i32, i32)> = None;
+    let fg_fs = CURRENT_FOREGROUND_FULLSCREEN.load(Ordering::Relaxed);
 
-                    let dock_rect_val = DOCK_WINDOW_RECT.lock().ok().and_then(|g| *g);
+    // --- Dock Interaction ---
+    if fg_fs {
+        // Fullscreen foreground app or capture overlay: the dock must not
+        // intercept input (e.g. a Snipping Tool selection ending at the
+        // bottom edge), so keep it click-through.
+        if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) != 1 {
+            if let Some(dock_win) = app_handle.get_webview_window("dock") {
+                let _ = dock_win.set_ignore_cursor_events(true);
+            }
+            MH_LAST_DOCK_IGNORE.store(1, Ordering::Relaxed);
+        }
+        if MH_LAST_EDGE_HOVER.swap(0, Ordering::Relaxed) != 0 {
+            let _ = app_handle.emit("dock-edge-hover", false);
+        }
+    } else if let Some(dock_win) = app_handle.get_webview_window("dock") {
+        if dock_win.is_visible().unwrap_or(false) {
+            let mut is_click_interactive = false;
+            let mut is_hovered = false;
+            let mut dock_span: Option<(i32, i32)> = None;
 
-                    if let Some((win_pos, win_size)) = dock_rect_val {
-                        let in_window = cursor.x >= win_pos.x
-                            && cursor.x <= (win_pos.x + win_size.width as i32)
-                            && cursor.y >= win_pos.y
-                            && cursor.y <= (win_pos.y + win_size.height as i32);
+            let dock_rect_val = DOCK_WINDOW_RECT.lock().ok().and_then(|g| *g);
 
-                        if in_window {
-                            if let Ok(region) = DOCK_RECT.try_lock() {
-                                if let Some(r) = *region {
-                                    let scale = dock_win.scale_factor().unwrap_or(1.0);
-                                    let pad_x = (5.0 * scale) as i32;
-                                    let pad_y_top = (8.0 * scale) as i32;
-                                    let pad_y_bottom = (5.0 * scale) as i32;
-                                    // Hysteresis keeps the dock interactive a little past
-                                    // its bounds once grabbed, so removing the edge-forced
-                                    // interactivity doesn't reintroduce boundary flicker.
-                                    let hyst = if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) == 0 {
-                                        (10.0 * scale) as i32
-                                    } else {
-                                        0
-                                    };
-                                    let rx = win_pos.x + (r.x as f64 * scale) as i32 - pad_x - hyst;
-                                    let ry =
-                                        win_pos.y + (r.y as f64 * scale) as i32 - pad_y_top - hyst;
-                                    let rw =
-                                        (r.width as f64 * scale) as i32 + (pad_x * 2) + (hyst * 2);
-                                    let rh = (r.height as f64 * scale) as i32
-                                        + pad_y_top
-                                        + pad_y_bottom
-                                        + (hyst * 2);
-                                    if cursor.x >= rx
-                                        && cursor.x <= (rx + rw)
-                                        && cursor.y >= ry
-                                        && cursor.y <= (ry + rh)
-                                    {
-                                        is_click_interactive = true;
-                                    }
-                                    dock_span = Some((rx, rx + rw));
-                                }
-                            }
+            if let Some((win_pos, win_size)) = dock_rect_val {
+                let in_window = cursor.x >= win_pos.x
+                    && cursor.x <= (win_pos.x + win_size.width as i32)
+                    && cursor.y >= win_pos.y
+                    && cursor.y <= (win_pos.y + win_size.height as i32);
 
-                            if !is_click_interactive && MENU_IS_OPEN.load(Ordering::Relaxed) {
-                                if let Ok(rect) = MENU_RECT.try_lock() {
-                                    if let Some(r) = *rect {
-                                        let scale = dock_win.scale_factor().unwrap_or(1.0);
-                                        let rx = win_pos.x + (r.x as f64 * scale) as i32
-                                            - (5.0 * scale) as i32;
-                                        let ry = win_pos.y + (r.y as f64 * scale) as i32
-                                            - (5.0 * scale) as i32;
-                                        let rw =
-                                            (r.width as f64 * scale) as i32 + (10.0 * scale) as i32;
-                                        let rh = (r.height as f64 * scale) as i32
-                                            + (10.0 * scale) as i32;
-                                        if cursor.x >= rx
-                                            && cursor.x <= (rx + rw)
-                                            && cursor.y >= ry
-                                            && cursor.y <= (ry + rh)
-                                        {
-                                            is_click_interactive = true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Hot-edge detection (Bottom edge)
-                    let in_dock_hover = DOCK_IS_HOVERED.load(Ordering::Relaxed);
-                    let scale = dock_win.scale_factor().unwrap_or(1.0);
-                    let at_bottom_edge = cursor.y >= (mon_y + mon_h - (8.0 * scale) as i32)
-                        && cursor.x >= mon_x
-                        && cursor.x <= (mon_x + mon_w);
-
-                    if at_bottom_edge || in_dock_hover {
-                        is_hovered = true;
-                        MH_DOCK_EXPIRY_MS.store(now + 500, Ordering::Relaxed);
-                    }
-
-                    // Approaching along the bottom edge keeps the dock interactive
-                    // while near its horizontal span, so the reveal can't be clicked
-                    // through mid-animation. The corners stay click-through.
-                    if at_bottom_edge {
-                        if let Some((span_left, span_right)) = dock_span {
-                            let edge_pad = (60.0 * scale) as i32;
-                            if cursor.x >= span_left - edge_pad && cursor.x <= span_right + edge_pad
+                if in_window {
+                    if let Ok(region) = DOCK_RECT.try_lock() {
+                        if let Some(r) = *region {
+                            let scale = dock_win.scale_factor().unwrap_or(1.0);
+                            let pad_x = (5.0 * scale) as i32;
+                            let pad_y_top = (8.0 * scale) as i32;
+                            let pad_y_bottom = (5.0 * scale) as i32;
+                            // Hysteresis keeps the dock interactive a little past
+                            // its bounds once grabbed, so removing the edge-forced
+                            // interactivity doesn't reintroduce boundary flicker.
+                            let hyst = if MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed) == 0 {
+                                (10.0 * scale) as i32
+                            } else {
+                                0
+                            };
+                            let rx = win_pos.x + (r.x as f64 * scale) as i32 - pad_x - hyst;
+                            let ry =
+                                win_pos.y + (r.y as f64 * scale) as i32 - pad_y_top - hyst;
+                            let rw =
+                                (r.width as f64 * scale) as i32 + (pad_x * 2) + (hyst * 2);
+                            let rh = (r.height as f64 * scale) as i32
+                                + pad_y_top
+                                + pad_y_bottom
+                                + (hyst * 2);
+                            if cursor.x >= rx
+                                && cursor.x <= (rx + rw)
+                                && cursor.y >= ry
+                                && cursor.y <= (ry + rh)
                             {
                                 is_click_interactive = true;
                             }
+                            dock_span = Some((rx, rx + rw));
                         }
                     }
 
-                    let final_dock_hover =
-                        is_hovered || now < MH_DOCK_EXPIRY_MS.load(Ordering::Relaxed);
-                    let prev = MH_LAST_EDGE_HOVER.load(Ordering::Relaxed);
-                    let new_val = if final_dock_hover { 1 } else { 0 };
-                    if prev != new_val {
-                        let _ = app_handle.emit("dock-edge-hover", final_dock_hover);
-                        MH_LAST_EDGE_HOVER.store(new_val, Ordering::Relaxed);
-                    }
-
-                    let should_ignore =
-                        !is_click_interactive && !MENU_IS_OPEN.load(Ordering::Relaxed);
-                    let prev_ignore = MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed);
-                    let new_ignore = if should_ignore { 1 } else { 0 };
-                    if prev_ignore != new_ignore {
-                        if let Ok(hwnd) = dock_win.hwnd() {
-                            re_assert_topmost(hwnd);
+                    if !is_click_interactive && MENU_IS_OPEN.load(Ordering::Relaxed) {
+                        if let Ok(rect) = MENU_RECT.try_lock() {
+                            if let Some(r) = *rect {
+                                let scale = dock_win.scale_factor().unwrap_or(1.0);
+                                let rx = win_pos.x + (r.x as f64 * scale) as i32
+                                    - (5.0 * scale) as i32;
+                                let ry = win_pos.y + (r.y as f64 * scale) as i32
+                                    - (5.0 * scale) as i32;
+                                let rw =
+                                    (r.width as f64 * scale) as i32 + (10.0 * scale) as i32;
+                                let rh = (r.height as f64 * scale) as i32
+                                    + (10.0 * scale) as i32;
+                                if cursor.x >= rx
+                                    && cursor.x <= (rx + rw)
+                                    && cursor.y >= ry
+                                    && cursor.y <= (ry + rh)
+                                {
+                                    is_click_interactive = true;
+                                }
+                            }
                         }
-                        let _ = dock_win.set_ignore_cursor_events(should_ignore);
-                        MH_LAST_DOCK_IGNORE.store(new_ignore, Ordering::Relaxed);
                     }
                 }
             }
 
-            // --- Main (TopBar) Interaction ---
-            update_main_interaction(app_handle, cursor, now, fg_fs);
+            // Hot-edge detection (Bottom edge)
+            let in_dock_hover = DOCK_IS_HOVERED.load(Ordering::Relaxed);
+            let scale = dock_win.scale_factor().unwrap_or(1.0);
+            let at_bottom_edge = cursor.y >= (mon_y + mon_h - (8.0 * scale) as i32)
+                && cursor.x >= mon_x
+                && cursor.x <= (mon_x + mon_w);
 
-            // Expanded per-app volume mixer (if open) — the reported rect covers
-            // the notch plus panel, so it keeps the card alive and clickable.
-            let mixer_rect = volume_mixer_physical_rect_for(app_handle);
-            let in_mixer = mixer_rect.is_some_and(|(rx, ry, rw, rh)| {
-                cursor.x >= rx && cursor.x <= rx + rw && cursor.y >= ry && cursor.y <= ry + rh
-            });
+            if at_bottom_edge || in_dock_hover {
+                is_hovered = true;
+                MH_DOCK_EXPIRY_MS.store(now + 500, Ordering::Relaxed);
+            }
 
-            // --- Left Edge (Volume) ---
-            if !fg_fs {
-                let at_left_edge =
-                    cursor.x <= (mon_x + 8) && cursor.y >= mon_y && cursor.y <= (mon_y + mon_h);
-
-                // The collapsed card extends past the 8px edge band, so once the
-                // edge hover is established, keep it alive while the cursor is
-                // over the card too (otherwise pausing on the mixer button lets
-                // the hover expire and the HUD hides mid-click).
-                let over_card = !at_left_edge
-                    && !in_mixer
-                    && MH_LAST_LEFT_EDGE_HOVER.load(Ordering::Relaxed) != 0
-                    && app_handle
-                        .primary_monitor()
-                        .ok()
-                        .flatten()
-                        .is_some_and(|m| {
-                            let bloom_scale = crate::utils::get_bloom_scale(app_handle);
-                            let ms = m.size();
-                            let mp = m.position();
-                            let sc = m.scale_factor() * bloom_scale;
-                            let nw = (42.0 * sc) as i32;
-                            let nh = (196.0 * sc) as i32;
-                            let nx = mp.x;
-                            let ny = mp.y + (ms.height as i32 / 2) - (nh / 2);
-                            cursor.x >= nx
-                                && cursor.x <= nx + nw
-                                && cursor.y >= ny
-                                && cursor.y <= ny + nh
-                        });
-
-                if at_left_edge || in_mixer || over_card {
-                    MH_LEFT_EXPIRY_MS.store(now + 500, Ordering::Relaxed);
-                }
-
-                let final_left_hover = now < MH_LEFT_EXPIRY_MS.load(Ordering::Relaxed);
-                let prev = MH_LAST_LEFT_EDGE_HOVER.load(Ordering::Relaxed);
-                let new_val = if final_left_hover { 1 } else { 0 };
-                if prev != new_val {
-                    let _ = app_handle.emit("volume-edge-hover", final_left_hover);
-                    MH_LAST_LEFT_EDGE_HOVER.store(new_val, Ordering::Relaxed);
-                }
-            } else {
-                let prev = MH_LAST_LEFT_EDGE_HOVER.load(Ordering::Relaxed);
-                if prev != 0 {
-                    let _ = app_handle.emit("volume-edge-hover", false);
-                    MH_LAST_LEFT_EDGE_HOVER.store(0, Ordering::Relaxed);
+            // Approaching along the bottom edge keeps the dock interactive
+            // while near its horizontal span, so the reveal can't be clicked
+            // through mid-animation. The corners stay click-through.
+            if at_bottom_edge {
+                if let Some((span_left, span_right)) = dock_span {
+                    let edge_pad = (60.0 * scale) as i32;
+                    if cursor.x >= span_left - edge_pad && cursor.x <= span_right + edge_pad
+                    {
+                        is_click_interactive = true;
+                    }
                 }
             }
 
-            // --- Right Edge (Brightness) ---
-            if !fg_fs {
-                let at_right_edge = cursor.x >= (mon_x + mon_w - 8)
-                    && cursor.y >= mon_y
-                    && cursor.y <= (mon_y + mon_h);
-
-                if at_right_edge {
-                    MH_RIGHT_EXPIRY_MS.store(now + 500, Ordering::Relaxed);
-                }
-
-                let final_right_hover = now < MH_RIGHT_EXPIRY_MS.load(Ordering::Relaxed);
-                let prev = MH_LAST_RIGHT_EDGE_HOVER.load(Ordering::Relaxed);
-                let new_val = if final_right_hover { 1 } else { 0 };
-                if prev != new_val {
-                    let _ = app_handle.emit("brightness-edge-hover", final_right_hover);
-                    MH_LAST_RIGHT_EDGE_HOVER.store(new_val, Ordering::Relaxed);
-                }
-            } else {
-                let prev = MH_LAST_RIGHT_EDGE_HOVER.load(Ordering::Relaxed);
-                if prev != 0 {
-                    let _ = app_handle.emit("brightness-edge-hover", false);
-                    MH_LAST_RIGHT_EDGE_HOVER.store(0, Ordering::Relaxed);
-                }
+            let final_dock_hover =
+                is_hovered || now < MH_DOCK_EXPIRY_MS.load(Ordering::Relaxed);
+            let prev = MH_LAST_EDGE_HOVER.load(Ordering::Relaxed);
+            let new_val = if final_dock_hover { 1 } else { 0 };
+            if prev != new_val {
+                let _ = app_handle.emit("dock-edge-hover", final_dock_hover);
+                MH_LAST_EDGE_HOVER.store(new_val, Ordering::Relaxed);
             }
 
-            // --- Overlay cursor passthrough ---
-            if let Some(ov_win) = app_handle.get_webview_window("overlay") {
-                if fg_fs {
-                    let prev = MH_LAST_OV_IGNORE.load(Ordering::Relaxed);
-                    if prev != 1 {
-                        if let Ok(hwnd) = ov_win.hwnd() {
-                            re_assert_topmost(hwnd);
-                        }
-                        let _ = ov_win.set_ignore_cursor_events(true);
-                        MH_LAST_OV_IGNORE.store(1, Ordering::Relaxed);
-                    }
-                } else {
-                    // The overlay applies `bloom-scale` as CSS zoom, so the cards
-                    // are larger than 42x196 CSS px for non-default scales.
-                    let bloom_scale = crate::utils::get_bloom_scale(app_handle);
-                    let over_left = in_mixer
-                        || if let Ok(Some(m)) = ov_win.primary_monitor() {
-                            let ms = m.size();
-                            let mp = m.position();
-                            let sc = m.scale_factor() * bloom_scale;
-                            let nw = (42.0 * sc) as i32;
-                            let nh = (196.0 * sc) as i32;
-                            let nx = mp.x;
-                            let ny = mp.y + (ms.height as i32 / 2) - (nh / 2);
-                            cursor.x >= nx
-                                && cursor.x <= nx + nw
-                                && cursor.y >= ny
-                                && cursor.y <= ny + nh
-                        } else {
-                            false
-                        };
-
-                    let over_right = if let Ok(Some(m)) = ov_win.primary_monitor() {
-                        let ms = m.size();
-                        let mp = m.position();
-                        let sc = m.scale_factor() * bloom_scale;
-                        let nw = (42.0 * sc) as i32;
-                        let nh = (196.0 * sc) as i32;
-                        let nx = mp.x + ms.width as i32 - nw;
-                        let ny = mp.y + (ms.height as i32 / 2) - (nh / 2);
-                        cursor.x >= nx
-                            && cursor.x <= nx + nw
-                            && cursor.y >= ny
-                            && cursor.y <= ny + nh
-                    } else {
-                        false
-                    };
-
-                    let should_ignore = !(over_left || over_right);
-                    let prev = MH_LAST_OV_IGNORE.load(Ordering::Relaxed);
-                    let new_val = if should_ignore { 1 } else { 0 };
-                    if prev != new_val {
-                        if let Ok(hwnd) = ov_win.hwnd() {
-                            re_assert_topmost(hwnd);
-                        }
-                        let _ = ov_win.set_ignore_cursor_events(should_ignore);
-                        MH_LAST_OV_IGNORE.store(new_val, Ordering::Relaxed);
-                    }
+            let should_ignore =
+                !is_click_interactive && !MENU_IS_OPEN.load(Ordering::Relaxed);
+            let prev_ignore = MH_LAST_DOCK_IGNORE.load(Ordering::Relaxed);
+            let new_ignore = if should_ignore { 1 } else { 0 };
+            if prev_ignore != new_ignore {
+                if let Ok(hwnd) = dock_win.hwnd() {
+                    re_assert_topmost(hwnd);
                 }
+                let _ = dock_win.set_ignore_cursor_events(should_ignore);
+                MH_LAST_DOCK_IGNORE.store(new_ignore, Ordering::Relaxed);
             }
         }
     }
-    CallNextHookEx(None, code, wparam, lparam)
+
+    // --- Main (TopBar) Interaction ---
+    update_main_interaction(app_handle, cursor, now, fg_fs);
+
+    // Expanded per-app volume mixer (if open) — the reported rect covers
+    // the notch plus panel, so it keeps the card alive and clickable.
+    let mixer_rect = volume_mixer_physical_rect_for(app_handle);
+    let in_mixer = mixer_rect.is_some_and(|(rx, ry, rw, rh)| {
+        cursor.x >= rx && cursor.x <= rx + rw && cursor.y >= ry && cursor.y <= ry + rh
+    });
+
+    // --- Overlay cursor passthrough ---
+    if let Some(ov_win) = app_handle.get_webview_window("overlay") {
+        if fg_fs {
+            let prev = MH_LAST_OV_IGNORE.load(Ordering::Relaxed);
+            if prev != 1 {
+                if let Ok(hwnd) = ov_win.hwnd() {
+                    re_assert_topmost(hwnd);
+                }
+                let _ = ov_win.set_ignore_cursor_events(true);
+                MH_LAST_OV_IGNORE.store(1, Ordering::Relaxed);
+            }
+        } else {
+            let drift_scale = crate::utils::get_drift_scale(app_handle);
+            let over_left = in_mixer
+                || if let Ok(Some(m)) = ov_win.primary_monitor() {
+                    let ms = m.size();
+                    let mp = m.position();
+                    let sc = m.scale_factor() * drift_scale;
+                    let nw = (42.0 * sc) as i32;
+                    let nh = (196.0 * sc) as i32;
+                    let nx = mp.x;
+                    let ny = mp.y + (ms.height as i32 / 2) - (nh / 2);
+                    cursor.x >= nx
+                        && cursor.x <= nx + nw
+                        && cursor.y >= ny
+                        && cursor.y <= ny + nh
+                } else {
+                    false
+                };
+
+            let over_right = if let Ok(Some(m)) = ov_win.primary_monitor() {
+                let ms = m.size();
+                let mp = m.position();
+                let sc = m.scale_factor() * drift_scale;
+                let nw = (42.0 * sc) as i32;
+                let nh = (196.0 * sc) as i32;
+                let nx = mp.x + ms.width as i32 - nw;
+                let ny = mp.y + (ms.height as i32 / 2) - (nh / 2);
+                cursor.x >= nx
+                    && cursor.x <= nx + nw
+                    && cursor.y >= ny
+                    && cursor.y <= ny + nh
+            } else {
+                false
+            };
+
+            let should_ignore = !(over_left || over_right);
+            let prev = MH_LAST_OV_IGNORE.load(Ordering::Relaxed);
+            let new_val = if should_ignore { 1 } else { 0 };
+            if prev != new_val {
+                if let Ok(hwnd) = ov_win.hwnd() {
+                    re_assert_topmost(hwnd);
+                }
+                let _ = ov_win.set_ignore_cursor_events(should_ignore);
+                MH_LAST_OV_IGNORE.store(new_val, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 pub fn trigger_app_scan() {
@@ -3154,9 +3057,9 @@ pub fn register_appbar(window: tauri::WebviewWindow) {
         let m_pos = monitor.position();
         let hwnd = window.hwnd().unwrap();
         let scale = monitor.scale_factor();
-        let bloom_scale = crate::utils::get_bloom_scale(window.app_handle());
-        let ph = ((420.0 * bloom_scale) * scale) as i32;
-        let pr = ((40.0 * bloom_scale) * scale) as i32; // Scale the reserved top screen space
+        let drift_scale = crate::utils::get_drift_scale(window.app_handle());
+        let ph = ((420.0 * drift_scale) * scale) as i32;
+        let pr = ((40.0 * drift_scale) * scale) as i32; // Scale the reserved top screen space
 
         unsafe {
             use windows::Win32::Foundation::RECT;
@@ -3227,7 +3130,7 @@ pub fn register_appbar(window: tauri::WebviewWindow) {
 
             // Re-assert topmost after repositioning — use re_assert_topmost instead of
             // set_always_on_top(true) to include SWP_NOACTIVATE and re-stamp WS_EX_NOACTIVATE.
-            // This prevents WM_ACTIVATE from reaching WebView2, which caused bloom windows
+            // This prevents WM_ACTIVATE from reaching WebView2, which caused drift windows
             // to blank/hide when other windows were minimized or closed.
             re_assert_topmost(hwnd);
 
@@ -3291,7 +3194,7 @@ fn notch_mode_reserves_work_area(mode: Option<&str>) -> bool {
 /// every re-registration path self-healing.
 pub fn reconcile_main_appbar(app: &AppHandle) {
     let _guard = lock_main_appbar();
-    let mode = get_setting_str(app, "bloom-notch-mode");
+    let mode = get_setting_str(app, "drift-notch-mode");
     if let Some(main_win) = app.get_webview_window("main") {
         set_main_appbar_reservation(main_win, notch_mode_reserves_work_area(mode.as_deref()));
     }
@@ -3317,7 +3220,7 @@ fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
         let m_pos = monitor.position();
         let hwnd = window.hwnd().unwrap();
         let scale = monitor.scale_factor();
-        let bloom_scale = crate::utils::get_bloom_scale(window.app_handle());
+        let drift_scale = crate::utils::get_drift_scale(window.app_handle());
 
         // ph = full physical window height. outer_size() can return 0 before the
         // window has rendered. Never guess a value — bail and let the retry wrapper handle it.
@@ -3333,7 +3236,7 @@ fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
             return;
         }
 
-        let pr = ((56.0 * bloom_scale) * scale) as i32;
+        let pr = ((56.0 * drift_scale) * scale) as i32;
 
         unsafe {
             use windows::Win32::Foundation::RECT;
@@ -3492,7 +3395,7 @@ pub unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> B
             }
 
             // Filter out system containers and background stuff
-            if title == "Program Manager" || title == "Bloom" || title == "Bloom Dock" {
+            if title == "Program Manager" || title == "Drift" || title == "Drift Dock" {
                 return true.into();
             }
 
@@ -3531,8 +3434,8 @@ pub unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> B
                         || window_class == "ExploreWClass"
                         || (window_class == "#32770" && dialog_has_tab_control(hwnd));
 
-                    // Filter out Bloom itself (except the Settings window) and some common background processes
-                    if (lowercase_path.contains("bloom.exe") && title != "Settings")
+                    // Filter out Drift itself (except the Settings window) and some common background processes
+                    if (lowercase_path.contains("drift.exe") && title != "Settings")
                         || lowercase_path.contains("conhost.exe")
                         || (lowercase_path.contains("explorer.exe") && !is_explorer_window)
                         || lowercase_path.contains("shellexperiencehost.exe")
@@ -3665,7 +3568,7 @@ fn reposition_all_windows(app_handle: &AppHandle) {
     // Without this guard, power events (plug/unplug, wake) would re-show
     // a dock that the user had previously disabled.
     let dock_enabled =
-        get_setting_str(app_handle, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
+        get_setting_str(app_handle, "drift-dock-enabled").unwrap_or_else(|| "true".to_string());
     if dock_enabled == "true" {
         if let Some(dock_win) = app_handle.get_webview_window("dock") {
             if DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
@@ -3753,7 +3656,7 @@ pub fn setup_display_change_monitor(app_handle: AppHandle) {
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::UI::WindowsAndMessaging::*;
 
-        let class_name = windows::core::PCSTR(c"BloomDisplayMonitor".as_ptr() as *const u8);
+        let class_name = windows::core::PCSTR(c"DriftDisplayMonitor".as_ptr() as *const u8);
         let h_inst = GetModuleHandleW(None).unwrap_or_default().into();
 
         let wnd_class = WNDCLASSEXA {
@@ -3884,7 +3787,7 @@ static RECOVERING_FROM_WEBVIEW_FAILURE: AtomicBool = AtomicBool::new(false);
 /// If a webview's browser or renderer process exits (crash, or killed), the
 /// notch and dock windows stay on screen with dead content. They also stop
 /// switching click-through, so they keep swallowing clicks meant for the
-/// windows under them. Bloom restarts itself when that happens.
+/// windows under them. Drift restarts itself when that happens.
 pub fn watch_webview_processes(app: &AppHandle) {
     let _ = WEBVIEWS_WATCHED_AT.set(Instant::now());
     for (_, window) in app.webview_windows() {
@@ -3938,7 +3841,68 @@ fn recover_from_webview_failure(handle: &AppHandle) {
         if started.is_some_and(|elapsed| elapsed < Duration::from_secs(30)) {
             crate::commands::restore_taskbar_and_exit(&handle);
         } else {
-            crate::commands::restart_bloom(handle).await;
+            crate::commands::restart_drift(handle).await;
+        }
+    });
+}
+
+/// Trims physical working set memory for the host app and all child WebView2 processes.
+/// This aggressively reclaims unused RAM, releasing 40-70% of physical memory.
+pub fn trim_process_working_set() {
+    unsafe {
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            GetCurrentProcess, GetCurrentProcessId, OpenProcess,
+            PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA,
+        };
+
+        let my_pid = GetCurrentProcessId();
+        let _ = K32EmptyWorkingSet(GetCurrentProcess());
+
+        if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            if Process32FirstW(snap, &mut entry).is_ok() {
+                loop {
+                    if entry.th32ParentProcessID == my_pid {
+                        if let Ok(child) = OpenProcess(
+                            PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+                            false,
+                            entry.th32ProcessID,
+                        ) {
+                            let _ = K32EmptyWorkingSet(child);
+                            let _ = CloseHandle(child);
+                        }
+                    }
+                    if Process32NextW(snap, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+        }
+    }
+}
+
+pub fn setup_memory_trim_worker() {
+    std::thread::spawn(|| {
+        // Initial delay to let startup and first render settle
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        trim_process_working_set();
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(45));
+            if SHUTTING_DOWN.load(Ordering::Relaxed) {
+                break;
+            }
+            trim_process_working_set();
         }
     });
 }

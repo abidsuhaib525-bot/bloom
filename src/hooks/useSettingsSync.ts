@@ -10,17 +10,17 @@ function convertSettingValue(value: any): any {
 
 /**
  * Centralized settings sync hook. Listens to:
- * - `settings-changed` — emitted by save_setting (bloom keys, native values)
- * - `settings-external-changed` — emitted by file watcher for external edits (bloom keys, string values)
+ * - `settings-changed` — emitted by save_setting (drift keys, native values)
+ * - `settings-external-changed` — emitted by file watcher for external edits (drift keys, string values)
  *
- * Both events use the same bloom-prefixed keys (e.g. "bloom-dock-enabled").
+ * Both events use the same drift-prefixed keys (e.g. "drift-dock-enabled").
  * Values may pass through String() conversion in the frontend, producing
  * "true"/"false" strings — the hook auto-converts these to booleans.
  *
  * Uses a ref for handlers so listeners are registered once (not re-registered
  * on every render when a new object literal is passed).
  *
- * @param handlers - Map of bloom-prefixed key → setter
+ * @param handlers - Map of drift-prefixed key → setter
  * @param deps - Optional additional dependency array
  */
 export function useSettingsSync(

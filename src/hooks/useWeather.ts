@@ -126,9 +126,9 @@ async function resolveLocation(): Promise<ResolvedLocation> {
 	// 1. Check saved coordinates from settings or localStorage
 	try {
 		const settings = (await invoke("load_settings").catch(() => ({}))) as Record<string, any>;
-		const savedLat = settings["bloom-weather-lat"] || localStorage.getItem("bloom-weather-lat");
-		const savedLon = settings["bloom-weather-lon"] || localStorage.getItem("bloom-weather-lon");
-		const savedCity = settings["bloom-weather-city"] || localStorage.getItem("bloom-weather-city");
+		const savedLat = settings["drift-weather-lat"] || localStorage.getItem("drift-weather-lat");
+		const savedLon = settings["drift-weather-lon"] || localStorage.getItem("drift-weather-lon");
+		const savedCity = settings["drift-weather-city"] || localStorage.getItem("drift-weather-city");
 
 		if (savedLat && savedLon) {
 			return {
@@ -177,13 +177,13 @@ async function resolveLocation(): Promise<ResolvedLocation> {
 async function persistWeather(temp: number | null, condition: string): Promise<void> {
 	if (temp !== null) {
 		invoke("save_setting", {
-			key: "bloom-weather-cached-temp",
+			key: "drift-weather-cached-temp",
 			value: temp
 		}).catch(() => {});
 	}
 	if (condition) {
 		invoke("save_setting", {
-			key: "bloom-weather-cached-condition",
+			key: "drift-weather-cached-condition",
 			value: condition
 		}).catch(() => {});
 	}
@@ -191,18 +191,18 @@ async function persistWeather(temp: number | null, condition: string): Promise<v
 
 export function useWeather(enabled: boolean) {
 	const [temperature, setTemperature] = useState<number | null>(() => {
-		const cached = localStorage.getItem("bloom-weather-cached-temp");
+		const cached = localStorage.getItem("drift-weather-cached-temp");
 		return cached !== null ? Number(cached) : null;
 	});
 	const [weatherCondition, setWeatherCondition] = useState<string>(
-		() => localStorage.getItem("bloom-weather-cached-condition") || ""
+		() => localStorage.getItem("drift-weather-cached-condition") || ""
 	);
 	const [weatherIcon, setWeatherIcon] = useState<ComponentType<LucideProps>>(() => Thermometer);
 	const [cityName, setCityName] = useState<string>(
-		() => localStorage.getItem("bloom-weather-city") || ""
+		() => localStorage.getItem("drift-weather-city") || ""
 	);
 	const [tempUnit, setTempUnit] = useState<string>(
-		() => localStorage.getItem("bloom-temp-unit") || "celsius"
+		() => localStorage.getItem("drift-temp-unit") || "celsius"
 	);
 
 	const tempUnitRef = useRef(tempUnit);
@@ -228,8 +228,8 @@ export function useWeather(enabled: boolean) {
 				// Update city name if resolved from IP geolocation
 				if (location.city) {
 					setCityName(location.city);
-					localStorage.setItem("bloom-weather-city", location.city);
-					invoke("save_setting", { key: "bloom-weather-city", value: location.city }).catch(
+					localStorage.setItem("drift-weather-city", location.city);
+					invoke("save_setting", { key: "drift-weather-city", value: location.city }).catch(
 						() => {}
 					);
 				}
@@ -251,24 +251,24 @@ export function useWeather(enabled: boolean) {
 		invoke("load_settings")
 			.then((settings: any) => {
 				const cachedTemp =
-					settings["bloom-weather-cached-temp"] ??
-					localStorage.getItem("bloom-weather-cached-temp");
+					settings["drift-weather-cached-temp"] ??
+					localStorage.getItem("drift-weather-cached-temp");
 				if (cachedTemp !== undefined && cachedTemp !== null) {
 					setTemperature(Number(cachedTemp));
 				}
 				const cachedCond =
-					settings["bloom-weather-cached-condition"] ??
-					localStorage.getItem("bloom-weather-cached-condition");
+					settings["drift-weather-cached-condition"] ??
+					localStorage.getItem("drift-weather-cached-condition");
 				if (cachedCond) {
 					setWeatherCondition(String(cachedCond));
 					setWeatherIcon(() => getWeatherIcon(String(cachedCond)));
 				}
-				const savedUnit = settings["bloom-temp-unit"] ?? localStorage.getItem("bloom-temp-unit");
+				const savedUnit = settings["drift-temp-unit"] ?? localStorage.getItem("drift-temp-unit");
 				if (savedUnit) {
 					setTempUnit(String(savedUnit));
 				}
 				const savedCity =
-					settings["bloom-weather-city"] ?? localStorage.getItem("bloom-weather-city");
+					settings["drift-weather-city"] ?? localStorage.getItem("drift-weather-city");
 				if (savedCity) {
 					setCityName(String(savedCity));
 				}
@@ -288,7 +288,7 @@ export function useWeather(enabled: boolean) {
 			"settings-external-changed",
 			(event) => {
 				const { key, value } = event.payload;
-				if (key === "bloom-temp-unit") {
+				if (key === "drift-temp-unit") {
 					setTempUnit(String(value));
 				}
 			}

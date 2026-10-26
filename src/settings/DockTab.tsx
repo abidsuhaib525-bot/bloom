@@ -13,10 +13,10 @@ import {
 import { SettingRow } from "./SettingRow";
 
 const START_ICON_PRESETS = [
-	{ key: "default", src: "/bloom.png", label: "Bloom" },
-	{ key: "bloom-colorful", src: "/bloom-colorful.png", label: "Colorful" },
-	{ key: "bloom-golden", src: "/bloom-golden.png", label: "Golden" },
-	{ key: "bloom-biscuit", src: "/bloom-biscuit.png", label: "Orange" },
+	{ key: "default", src: "/drift.png", label: "Drift" },
+	{ key: "drift-colorful", src: "/drift-colorful.png", label: "Colorful" },
+	{ key: "drift-golden", src: "/drift-golden.png", label: "Golden" },
+	{ key: "drift-biscuit", src: "/drift-biscuit.png", label: "Orange" },
 	{ key: "windows", src: "/windows.png", label: "Windows" }
 ];
 
@@ -24,7 +24,7 @@ const startIconTileStyle = (active: boolean): CSSProperties => ({
 	width: "48px",
 	height: "48px",
 	borderRadius: "12px",
-	border: active ? "2px solid var(--bloom-accent, #007aff)" : "2px solid rgba(255,255,255,0.1)",
+	border: active ? "2px solid var(--drift-accent, #007aff)" : "2px solid rgba(255,255,255,0.1)",
 	background: active ? "rgba(0,122,255,0.15)" : "rgba(255,255,255,0.05)",
 	display: "flex",
 	alignItems: "center",
@@ -87,7 +87,7 @@ export function DockTab({
 		<>
 			<div className="setting-group-label">Dock</div>
 			<div className="setting-group">
-				<SettingRow icon={Monitor} label="Bloom Dock" desc="Replace Windows taskbar">
+				<SettingRow icon={Monitor} label="Drift Dock" desc="Replace Windows taskbar">
 					<label className="toggle-switch">
 						<input type="checkbox" checked={dockEnabled} onChange={toggleDock} />
 						<span className="slider"></span>

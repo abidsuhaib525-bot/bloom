@@ -585,24 +585,17 @@ function OverlayApp() {
 	const [isMuted, setIsMuted] = useState(false);
 	const [mixerExpanded, setMixerExpanded] = useState(false);
 	const [volumeOverlayEnabled, setVolumeOverlayEnabled] = useState(
-		() => localStorage.getItem("bloom-volume-overlay-enabled") !== "false"
+		() => localStorage.getItem("drift-volume-overlay-enabled") !== "false"
 	);
-	const [volumeEdgeEnabled, setVolumeEdgeEnabled] = useState(
-		() => localStorage.getItem("bloom-volume-edge-enabled") !== "false"
-	);
-
 	// Brightness state
 	const [brightness, setBrightness] = useState(50);
 	const [brightnessOverlayEnabled, setBrightnessOverlayEnabled] = useState(
-		() => localStorage.getItem("bloom-brightness-overlay-enabled") !== "false"
-	);
-	const [brightnessEdgeEnabled, setBrightnessEdgeEnabled] = useState(
-		() => localStorage.getItem("bloom-brightness-edge-enabled") !== "false"
+		() => localStorage.getItem("drift-brightness-overlay-enabled") !== "false"
 	);
 
 	// Shared state
 	const [scale, setScale] = useState(() =>
-		parseFloat(localStorage.getItem("bloom-scale") || "1.0")
+		parseFloat(localStorage.getItem("drift-scale") || "1.0")
 	);
 	const timeoutRef = useRef<any>(null);
 	const hideWindowTimeoutRef = useRef<any>(null);
@@ -624,14 +617,14 @@ function OverlayApp() {
 		invoke("load_settings")
 			.then(async (settings: any) => {
 				if (await reloadIfMirrorWasStale(settings)) return;
-				if (settings && settings["bloom-scale"] !== undefined) {
-					setScale(parseFloat(settings["bloom-scale"]));
+				if (settings && settings["drift-scale"] !== undefined) {
+					setScale(parseFloat(settings["drift-scale"]));
 				}
-				if (settings && settings["bloom-brightness-overlay-enabled"] !== undefined) {
-					setBrightnessOverlayEnabled(settings["bloom-brightness-overlay-enabled"] === "true");
+				if (settings && settings["drift-brightness-overlay-enabled"] !== undefined) {
+					setBrightnessOverlayEnabled(settings["drift-brightness-overlay-enabled"] === "true");
 				}
-				if (settings && settings["bloom-volume-overlay-enabled"] !== undefined) {
-					setVolumeOverlayEnabled(settings["bloom-volume-overlay-enabled"] === "true");
+				if (settings && settings["drift-volume-overlay-enabled"] !== undefined) {
+					setVolumeOverlayEnabled(settings["drift-volume-overlay-enabled"] === "true");
 				}
 			})
 			.catch(console.error);
@@ -650,23 +643,22 @@ function OverlayApp() {
 
 	// ── Splash Detection ──
 	useEffect(() => {
-		const firstRun = localStorage.getItem("bloom-first-run") === null;
-		const storedVersion = localStorage.getItem("bloom-app-version");
+		const firstRun = localStorage.getItem("drift-first-run") === null;
+		const storedVersion = localStorage.getItem("drift-app-version");
+		const alwaysSplash = localStorage.getItem("drift-show-splash") === "true";
 
 		const showSplash = (version?: string) => {
 			splashActiveRef.current = true;
 			setMode("splash");
 			invoke("set_splash_fullscreen", { fullscreen: true });
-			if (version) localStorage.setItem("bloom-app-version", version);
+			if (version) localStorage.setItem("drift-app-version", version);
 			setTimeout(() => emit("splash-done"), 2800);
 		};
 
-		// First run or old version without version key — splash immediately
-		if (firstRun || storedVersion === null) {
+		if (alwaysSplash || firstRun || storedVersion === null) {
 			showSplash();
-			// Still try to store the version in the background
 			getVersion()
-				.then((v) => localStorage.setItem("bloom-app-version", v))
+				.then((v) => localStorage.setItem("drift-app-version", v))
 				.catch(() => {});
 			return;
 		}
@@ -681,13 +673,12 @@ function OverlayApp() {
 				}
 			})
 			.catch(() => {
-				// Version check failed — let bloom start
 				emit("splash-done");
 			});
 	}, []);
 
 	const onSplashComplete = useCallback(() => {
-		localStorage.setItem("bloom-first-run", "done");
+		localStorage.setItem("drift-first-run", "done");
 		setTimeout(() => {
 			splashActiveRef.current = false;
 			setMode("idle");
@@ -710,20 +701,6 @@ function OverlayApp() {
 			resetHideTimeout();
 		});
 
-		const volEdgePromise = listen<boolean>("volume-edge-hover", (event) => {
-			if (splashActiveRef.current || !volumeOverlayEnabled || !volumeEdgeEnabled) return;
-			if (event.payload) {
-				setMode("volume");
-				if (timeoutRef.current) clearTimeout(timeoutRef.current);
-			} else {
-				if (timeoutRef.current) clearTimeout(timeoutRef.current);
-				timeoutRef.current = setTimeout(
-					() => setMode("idle"),
-					mixerExpandedRef.current ? 700 : 1500
-				);
-			}
-		});
-
 		const brightPromise = listen("brightness-change", (event: any) => {
 			if (splashActiveRef.current || !brightnessOverlayEnabled) return;
 			invoke("hide_native_osd");
@@ -731,17 +708,6 @@ function OverlayApp() {
 			setBrightness(newBrightness);
 			setMode("brightness");
 			resetHideTimeout();
-		});
-
-		const brightEdgePromise = listen<boolean>("brightness-edge-hover", (event) => {
-			if (splashActiveRef.current || !brightnessOverlayEnabled || !brightnessEdgeEnabled) return;
-			if (event.payload) {
-				setMode("brightness");
-				if (timeoutRef.current) clearTimeout(timeoutRef.current);
-			} else {
-				if (timeoutRef.current) clearTimeout(timeoutRef.current);
-				timeoutRef.current = setTimeout(() => setMode("idle"), 1500);
-			}
 		});
 
 		const autoUpdatePromise = listen<{ status: string; progress?: number }>(
@@ -765,26 +731,20 @@ function OverlayApp() {
 
 		return () => {
 			volPromise.then((fn) => fn());
-			volEdgePromise.then((fn) => fn());
 			brightPromise.then((fn) => fn());
-			brightEdgePromise.then((fn) => fn());
 			autoUpdatePromise.then((fn) => fn());
 			document.removeEventListener("contextmenu", preventContext);
 		};
 	}, [
 		volumeOverlayEnabled,
-		volumeEdgeEnabled,
 		brightnessOverlayEnabled,
-		brightnessEdgeEnabled,
 		resetHideTimeout
 	]);
 
 	useSettingsSync({
-		"bloom-volume-overlay-enabled": setVolumeOverlayEnabled,
-		"bloom-volume-edge-enabled": setVolumeEdgeEnabled,
-		"bloom-brightness-overlay-enabled": setBrightnessOverlayEnabled,
-		"bloom-brightness-edge-enabled": setBrightnessEdgeEnabled,
-		"bloom-scale": setScale
+		"drift-volume-overlay-enabled": setVolumeOverlayEnabled,
+		"drift-brightness-overlay-enabled": setBrightnessOverlayEnabled,
+		"drift-scale": setScale
 	});
 
 	// Side effects: reset overlay mode to idle when overlay is disabled
@@ -909,7 +869,7 @@ function OverlayApp() {
 						transition={{ duration: 0.3 }}
 					>
 						<motion.img
-							src="/bloom.png"
+							src="/drift.png"
 							className="splash-logo"
 							draggable={false}
 							initial={{ scale: 0, opacity: 0, rotate: 0 }}
@@ -939,7 +899,7 @@ function OverlayApp() {
 						exit={{ opacity: 0 }}
 						transition={{ duration: 0.3 }}
 					>
-						<img src="/bloom.png" className="update-splash-logo" alt="Bloom" />
+						<img src="/drift.png" className="update-splash-logo" alt="Drift" />
 						<p className="update-splash-text">
 							{updateStatus === "checking" && "Checking for updates..."}
 							{updateStatus === "downloading" && `Downloading update... ${updateProgress}%`}

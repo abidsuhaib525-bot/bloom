@@ -16,7 +16,7 @@ export default function AboutApp({ githubUrl, downloadUrl, accentColor }: AboutA
 	});
 
 	useEffect(() => {
-		fetch("https://api.github.com/repos/SehajveerSingh2005/bloom/releases/latest")
+		fetch("https://api.github.com/repos/abidsuhaib525-bot/drift/releases/latest")
 			.then((res) => res.json())
 			.then((data) => {
 				if (data?.tag_name) {
@@ -59,9 +59,9 @@ export default function AboutApp({ githubUrl, downloadUrl, accentColor }: AboutA
 				{/* Top bar */}
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-2">
-						<img src="/bloom.png" alt="" className="w-4 h-4 object-contain opacity-60" />
+						<img src="/drift.png" alt="" className="w-4 h-4 object-contain opacity-60" />
 						<span className="text-[9px] font-bold tracking-[0.2em] uppercase text-white/25">
-							Bloom
+							Drift
 						</span>
 					</div>
 					<div className="flex items-center gap-1.5 bg-white/[0.03] border border-white/[0.05] rounded-full px-2 py-0.5">
@@ -77,8 +77,8 @@ export default function AboutApp({ githubUrl, downloadUrl, accentColor }: AboutA
 					{/* Big icon — rotates on hover */}
 					<div className="group cursor-default">
 						<img
-							src="/bloom.png"
-							alt="Bloom"
+							src="/drift.png"
+							alt="Drift"
 							className="w-20 h-20 object-contain transition-transform duration-500 ease-out group-hover:rotate-180"
 						/>
 					</div>
@@ -86,7 +86,7 @@ export default function AboutApp({ githubUrl, downloadUrl, accentColor }: AboutA
 					{/* Title */}
 					<div className="w-full mt-4 min-h-[60px]">
 						<TextPressure
-							text="BLOOM"
+							text="DRIFT"
 							flex
 							alpha={false}
 							stroke={false}

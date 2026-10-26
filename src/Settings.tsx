@@ -4,7 +4,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Effect } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { X, Settings, Palette, PanelTop, Monitor, Layers, Info, Megaphone } from "lucide-react";
+import { X, Settings, Palette, PanelTop, Monitor, Layers, Info, Megaphone, Search } from "lucide-react";
 import {
 	useSettings,
 	GeneralTab,
@@ -12,6 +12,7 @@ import {
 	NotchTab,
 	DockTab,
 	OverlaysTab,
+	SpotlightTab,
 	AboutTab
 } from "./settings/index";
 import type { SettingsTab } from "./settings/index";
@@ -27,6 +28,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Settings }[] = [
 	{ id: "notch", label: "Notch", icon: PanelTop },
 	{ id: "dock", label: "Dock", icon: Monitor },
 	{ id: "overlays", label: "Overlays", icon: Layers },
+	{ id: "spotlight", label: "Spotlight", icon: Search },
 	{ id: "about", label: "About", icon: Info }
 ];
 
@@ -124,15 +126,19 @@ function SettingsApp() {
 						<GeneralTab
 							autostart={settings.autostart}
 							toggleAutostart={settings.toggleAutostart}
+							showSplashOnStartup={settings.showSplashOnStartup}
+							toggleShowSplashOnStartup={settings.toggleShowSplashOnStartup}
 							timeFormat24h={settings.timeFormat24h}
 							toggleTimeFormat24h={settings.toggleTimeFormat24h}
+							launcherEnabled={settings.launcherEnabled}
+							toggleLauncherEnabled={settings.toggleLauncherEnabled}
 							showUpdateIndicator={settings.showUpdateIndicator}
 							toggleUpdateIndicator={settings.toggleUpdateIndicator}
 							lowBatteryThreshold={settings.lowBatteryThreshold}
 							handleThresholdChange={settings.handleThresholdChange}
-							restartBloom={settings.restartBloom}
+							restartDrift={settings.restartDrift}
 							resetToDefaults={settings.resetToDefaults}
-							quitBloom={settings.quitBloom}
+							quitDrift={settings.quitDrift}
 						/>
 					)}
 					{activeTab === "appearance" && (
@@ -147,8 +153,6 @@ function SettingsApp() {
 							handleSaturationChange={settings.handleSaturationChange}
 							themeBrightness={settings.themeBrightness}
 							handleBrightnessChange={settings.handleBrightnessChange}
-							cornersEnabled={settings.cornersEnabled}
-							toggleCorners={settings.toggleCorners}
 							scale={settings.scale}
 							handleScaleChange={settings.handleScaleChange}
 						/>
@@ -161,18 +165,14 @@ function SettingsApp() {
 							handleNotchEdgeDelayChange={settings.handleNotchEdgeDelayChange}
 							calendarEnabled={settings.calendarEnabled}
 							toggleCalendar={settings.toggleCalendar}
-							timerSoundEnabled={settings.timerSoundEnabled}
-							toggleTimerSound={settings.toggleTimerSound}
 							musicModeEnabled={settings.musicModeEnabled}
 							toggleMusicMode={settings.toggleMusicMode}
 							musicCompactNotch={settings.musicCompactNotch}
 							toggleMusicCompactNotch={settings.toggleMusicCompactNotch}
 							mediaLayout={settings.mediaLayout}
 							toggleMediaLayout={settings.toggleMediaLayout}
-							mediaAmbienceEnabled={settings.mediaAmbienceEnabled}
-							toggleAmbience={settings.toggleAmbience}
-							mediaCompactGlowEnabled={settings.mediaCompactGlowEnabled}
-							toggleCompactGlow={settings.toggleCompactGlow}
+							mediaGlowIntensity={settings.mediaGlowIntensity}
+							handleMediaGlowIntensityChange={settings.handleMediaGlowIntensityChange}
 							weatherEnabled={settings.weatherEnabled}
 							toggleWeather={settings.toggleWeather}
 							tempUnitFahrenheit={settings.tempUnitFahrenheit}
@@ -212,12 +212,37 @@ function SettingsApp() {
 						<OverlaysTab
 							volumeOverlayEnabled={settings.volumeOverlayEnabled}
 							toggleVolumeOverlay={settings.toggleVolumeOverlay}
-							volumeEdgeEnabled={settings.volumeEdgeEnabled}
-							toggleVolumeEdge={settings.toggleVolumeEdge}
 							brightnessOverlayEnabled={settings.brightnessOverlayEnabled}
 							toggleBrightnessOverlay={settings.toggleBrightnessOverlay}
-							brightnessEdgeEnabled={settings.brightnessEdgeEnabled}
-							toggleBrightnessEdge={settings.toggleBrightnessEdge}
+						/>
+					)}
+					{activeTab === "spotlight" && (
+						<SpotlightTab
+							launcherEnabled={settings.launcherEnabled}
+							toggleLauncherEnabled={settings.toggleLauncherEnabled}
+							spotlightGlassEnabled={settings.spotlightGlassEnabled}
+							toggleSpotlightGlassEnabled={settings.toggleSpotlightGlassEnabled}
+							spotlightPreset={settings.spotlightPreset}
+							handleSpotlightPresetChange={settings.handleSpotlightPresetChange}
+							spotlightOpacity={settings.spotlightOpacity}
+							handleSpotlightOpacityChange={settings.handleSpotlightOpacityChange}
+							spotlightBlur={settings.spotlightBlur}
+							handleSpotlightBlurChange={settings.handleSpotlightBlurChange}
+							spotlightGloss={settings.spotlightGloss}
+							handleSpotlightGlossChange={settings.handleSpotlightGlossChange}
+							spotlightMaxResults={settings.spotlightMaxResults}
+							handleSpotlightMaxResultsChange={settings.handleSpotlightMaxResultsChange}
+							spotlightBgImage={settings.spotlightBgImage}
+							handlePickSpotlightBgImage={settings.handlePickSpotlightBgImage}
+							handleClearSpotlightBgImage={settings.handleClearSpotlightBgImage}
+							spotlightEnableFiles={settings.spotlightEnableFiles}
+							toggleSpotlightFiles={settings.toggleSpotlightFiles}
+							spotlightEnableCommands={settings.spotlightEnableCommands}
+							toggleSpotlightCommands={settings.toggleSpotlightCommands}
+							spotlightEnableCalc={settings.spotlightEnableCalc}
+							toggleSpotlightCalc={settings.toggleSpotlightCalc}
+							spotlightEnableWeb={settings.spotlightEnableWeb}
+							toggleSpotlightWeb={settings.toggleSpotlightWeb}
 						/>
 					)}
 					{activeTab === "about" && (

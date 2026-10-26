@@ -21,7 +21,7 @@ async function gh(path, { json, headers, ...options } = {}) {
 			Authorization: `Bearer ${TOKEN}`,
 			Accept: "application/vnd.github+json",
 			"X-GitHub-Api-Version": "2022-11-28",
-			"User-Agent": "bloom-ai-issues",
+			"User-Agent": "drift-ai-issues",
 			...(json ? { "Content-Type": "application/json" } : {}),
 			...headers
 		}
@@ -101,12 +101,12 @@ async function triage() {
 	const roster =
 		others.map((candidate) => `#${candidate.number}: ${candidate.title}`).join("\n") || "(none)";
 
-	const prompt = `You are the first-pass triage assistant for Bloom, a Windows desktop companion app (dock, notch, overlays, media controls). Analyze the GitHub issue below and return JSON only.
+	const prompt = `You are the first-pass triage assistant for Drift, a Windows desktop companion app (dock, notch, overlays, media controls). Analyze the GitHub issue below and return JSON only.
 
 Rules:
 - type: bug = something broken, enhancement = new feature or improvement, question = usage question, documentation = docs issue.
 - area: dock, notch, media, settings, installer, multi-monitor, or other.
-- needsInfo: true when the report is too vague to act on (bugs missing Windows or Bloom version, or no clear reproduction steps).
+- needsInfo: true when the report is too vague to act on (bugs missing Windows or Drift version, or no clear reproduction steps).
 - missingInfo: short list of what is missing ('' when needsInfo is false).
 - duplicateOf: issue numbers from "Open issues" that are clearly the same bug or request ([] when none).
 - summary: 1-2 plain sentences a maintainer can read instead of the full issue.
@@ -171,7 +171,7 @@ async function digest() {
 		})
 		.join("\n");
 
-	const prompt = `You write the weekly triage digest for the maintainer of Bloom, a Windows desktop companion app. Below are all currently open issues (${active.length} total, ${openedThisWeek} opened in the last 7 days). Today is ${new Date().toISOString().slice(0, 10)}.
+	const prompt = `You write the weekly triage digest for the maintainer of Drift, a Windows desktop companion app. Below are all currently open issues (${active.length} total, ${openedThisWeek} opened in the last 7 days). Today is ${new Date().toISOString().slice(0, 10)}.
 
 Return GitHub-flavored markdown with exactly these sections:
 

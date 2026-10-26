@@ -1,10 +1,10 @@
-# Contributing to Bloom
+# Contributing to Drift
 
-Thanks for wanting to help. Bloom is a Windows desktop companion built with Tauri — a Rust core and a React/TypeScript UI.
+Thanks for wanting to help. Drift is a Windows desktop companion built with Tauri — a Rust core and a React/TypeScript UI.
 
 ## Before you start
 
-**Issues come first.** Bloom is a small project, so unsolicited feature PRs are hard to keep up with — however good the code is.
+**Issues come first.** Drift is a small project, so unsolicited feature PRs are hard to keep up with — however good the code is.
 
 - Bugs and feature ideas go through the issue templates. They keep triage automatic.
 - For anything large (new features, behavior changes, refactors, new dependencies), open an issue and wait for a maintainer to agree on the approach before writing code.
@@ -50,4 +50,4 @@ Useful commands:
 
 ## License
 
-Bloom is licensed under GPL-3.0. By contributing, you agree that your contributions are licensed under the same terms.
+Drift is licensed under GPL-3.0. By contributing, you agree that your contributions are licensed under the same terms.

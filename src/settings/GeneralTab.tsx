@@ -1,4 +1,4 @@
-import { Power, Download, Clock, BatteryWarning, RefreshCw, RotateCcw, LogOut } from "lucide-react";
+import { Power, Download, Clock, BatteryWarning, RefreshCw, RotateCcw, LogOut, Play, Search } from "lucide-react";
 import { SettingRow } from "./SettingRow";
 
 interface GeneralTabProps {
@@ -6,13 +6,17 @@ interface GeneralTabProps {
 	toggleAutostart: () => void;
 	timeFormat24h: boolean;
 	toggleTimeFormat24h: () => void;
+	launcherEnabled: boolean;
+	toggleLauncherEnabled: () => void;
+	showSplashOnStartup: boolean;
+	toggleShowSplashOnStartup: () => void;
 	showUpdateIndicator: boolean;
 	toggleUpdateIndicator: () => void;
 	lowBatteryThreshold: number;
 	handleThresholdChange: (val: number) => void;
-	restartBloom: () => void;
+	restartDrift: () => void;
 	resetToDefaults: () => void;
-	quitBloom: () => void;
+	quitDrift: () => void;
 }
 
 export function GeneralTab({
@@ -20,21 +24,39 @@ export function GeneralTab({
 	toggleAutostart,
 	timeFormat24h,
 	toggleTimeFormat24h,
+	launcherEnabled,
+	toggleLauncherEnabled,
+	showSplashOnStartup,
+	toggleShowSplashOnStartup,
 	showUpdateIndicator,
 	toggleUpdateIndicator,
 	lowBatteryThreshold,
 	handleThresholdChange,
-	restartBloom,
+	restartDrift,
 	resetToDefaults,
-	quitBloom
+	quitDrift
 }: GeneralTabProps) {
 	return (
 		<>
 			<div className="setting-group-label">System</div>
 			<div className="setting-group">
-				<SettingRow icon={Power} label="Launch at Login" desc="Open Bloom automatically">
+				<SettingRow icon={Power} label="Launch at Login" desc="Open Drift automatically">
 					<label className="toggle-switch">
 						<input type="checkbox" checked={autostart} onChange={toggleAutostart} />
+						<span className="slider"></span>
+					</label>
+				</SettingRow>
+
+				<SettingRow icon={Search} label="Spotlight Launcher" desc="Toggle app search with Alt + Space">
+					<label className="toggle-switch">
+						<input type="checkbox" checked={launcherEnabled} onChange={toggleLauncherEnabled} />
+						<span className="slider"></span>
+					</label>
+				</SettingRow>
+
+				<SettingRow icon={Play} label="Splash Animation" desc="Show Drift logo on startup">
+					<label className="toggle-switch">
+						<input type="checkbox" checked={showSplashOnStartup} onChange={toggleShowSplashOnStartup} />
 						<span className="slider"></span>
 					</label>
 				</SettingRow>
@@ -80,25 +102,25 @@ export function GeneralTab({
 				<SettingRow
 					icon={RotateCcw}
 					label="Reset to Defaults"
-					desc="Restore all settings and restart Bloom"
+					desc="Restore all settings and restart Drift"
 					action
 					danger
 					onClick={resetToDefaults}
 				/>
 				<SettingRow
 					icon={RefreshCw}
-					label="Restart Bloom"
+					label="Restart Drift"
 					desc="Reinitialize all components"
 					action
-					onClick={restartBloom}
+					onClick={restartDrift}
 				/>
 				<SettingRow
 					icon={LogOut}
-					label="Quit Bloom"
+					label="Quit Drift"
 					desc="Exit application completely"
 					action
 					danger
-					onClick={quitBloom}
+					onClick={quitDrift}
 					divider={false}
 				/>
 			</div>
